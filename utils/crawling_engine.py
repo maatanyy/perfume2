@@ -8,6 +8,9 @@ from app import create_app
 from models.crawling_job import CrawlingJob
 from models.crawling_log import CrawlingLog
 from crawlers.crawler_factory import get_crawler, get_crawler_by_url
+
+# 스레드 로컬 스토리지 (각 스레드가 독립 크롤러 캐시 보유)
+thread_local = threading.local()
 from utils.google_sheets import get_sheet_data, parse_sheet_data, extract_spreadsheet_id
 import time
 from datetime import datetime, timezone, timedelta
@@ -63,9 +66,6 @@ class CrawlingEngine:
         job = CrawlingJob.query.get(job_id)
         if not job:
             return
-
-        # 배치 크롤러 캐시 (try 밖에서 초기화 - finally에서 안전하게 접근하기 위함)
-        batch_crawler_cache = {}
 
         try:
             job.start()
@@ -152,7 +152,6 @@ class CrawlingEngine:
                             product,
                             crawler,
                             job_id,
-                            batch_crawler_cache,  # 캐시 전달
                         ): product
                         for product in batch
                     }
@@ -224,18 +223,6 @@ class CrawlingEngine:
             job.fail(str(e))
             self._add_log(job_id, "ERROR", f"크롤링 실패: {str(e)}")
         finally:
-            # 배치 크롤러 캐시 정리 (메모리 누수 방지 - 최우선!)
-            try:
-                for cached_crawler in batch_crawler_cache.values():
-                    try:
-                        cached_crawler._close_driver()
-                    except Exception as cleanup_error:
-                        self._add_log(
-                            job_id, "WARNING", f"크롤러 정리 실패: {str(cleanup_error)}"
-                        )
-            except:
-                pass
-
             # 스레드 정리
             if job_id in self.active_jobs:
                 del self.active_jobs[job_id]
@@ -254,26 +241,26 @@ class CrawlingEngine:
             "logs": [],  # 로그 메시지를 저장 (나중에 메인 스레드에서 DB에 추가)
         }
 
-        # 크롤러 캐시 (배치 레벨에서 전달받거나 없으면 생성)
-        if crawler_cache is None:
-            crawler_cache = {}
+        # 스레드 로컬 크롤러 캐시 초기화 (각 스레드가 독립 크롤러 보유)
+        if not hasattr(thread_local, "crawler_cache"):
+            thread_local.crawler_cache = {}
 
         def get_crawler_for_url(url: str):
-            """URL에 맞는 크롤러 반환 (배치 레벨 캐싱)"""
+            """URL에 맞는 크롤러 반환 (스레드별 독립 캐싱)"""
             # URL 도메인으로 캐시 키 생성
             from urllib.parse import urlparse
 
             domain = urlparse(url).netloc
 
-            # 배치 레벨 캐시 확인 (crawler_factory의 싱글톤 인스턴스 재사용)
-            if domain not in crawler_cache:
+            # 스레드 로컬 캐시 확인 (각 스레드가 독립된 크롤러 인스턴스 사용)
+            if domain not in thread_local.crawler_cache:
                 url_crawler = get_crawler_by_url(url)
                 if url_crawler:
-                    crawler_cache[domain] = url_crawler
+                    thread_local.crawler_cache[domain] = url_crawler
                 else:
-                    crawler_cache[domain] = default_crawler
+                    thread_local.crawler_cache[domain] = default_crawler
 
-            selected_crawler = crawler_cache[domain]
+            selected_crawler = thread_local.crawler_cache[domain]
             crawler_name = selected_crawler.__class__.__name__
             result["logs"].append(
                 (
@@ -338,7 +325,18 @@ class CrawlingEngine:
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
 
-        # 제품 크롤링 완료 (배치 레벨에서 정리하므로 여기서는 크롤러 정리 안 함)
+        # 제품 크롤링 완료 - 스레드 로컬 크롤러 정리
+        try:
+            if hasattr(thread_local, "crawler_cache"):
+                for domain_crawler in thread_local.crawler_cache.values():
+                    try:
+                        domain_crawler._close_driver()
+                    except:
+                        pass
+                thread_local.crawler_cache = {}
+        except:
+            pass
+
         return result
 
     def _crawl_product_safe(
@@ -346,11 +344,10 @@ class CrawlingEngine:
         product: Dict,
         default_crawler,
         job_id: int,
-        crawler_cache: Dict = None,
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
-            return self._crawl_product(product, default_crawler, job_id, crawler_cache)
+            return self._crawl_product(product, default_crawler, job_id, None)
         except Exception as e:
             product_name = str(product.get("product_name", "Unknown"))
             if len(product_name) > 20:
