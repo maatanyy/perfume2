@@ -188,16 +188,15 @@ class CrawlingEngine:
                                 }
                             )
 
-                # ThreadPoolExecutor 종료 후 배치의 Chrome 정리
-                # 직접 정리는 불가능 (스레드 내부 변수 접근 불가)
-                # 대신 가비지 컬렉션 강제 실행
-                import gc
-
-                gc.collect()
+                # ThreadPoolExecutor 종료 - 배치 완료
 
                 results.extend(batch_results)
 
-                # 배치 완료 후 스레드 정리 (ThreadPoolExecutor 종료 시 자동 정리됨)
+                # 배치 완료 후 Python GC로 스레드 로컬 정리 시도
+                import gc
+                gc.collect()
+                
+                self._add_log(job_id, "INFO", f"배치 {batch_num} 완료, Chrome 정리 대기 중...")
                 # 명시적 정리는 finally 블록에서 수행
 
                 # 진행률 업데이트
@@ -361,20 +360,7 @@ class CrawlingEngine:
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
-            result = self._crawl_product(product, default_crawler, job_id, None)
-            
-            # 제품 완료 후 Chrome 정리 (스레드 로컬)
-            try:
-                if hasattr(thread_local, "crawlers_initialized"):
-                    thread_local.ssg_crawler._close_driver()
-                    thread_local.cj_crawler._close_driver()
-                    thread_local.shinsegae_crawler._close_driver()
-                    thread_local.lotte_crawler._close_driver()
-                    thread_local.gs_crawler._close_driver()
-            except:
-                pass
-            
-            return result
+            return self._crawl_product(product, default_crawler, job_id, None)
 
             # 제품 크롤링 완료 후 즉시 Chrome 정리 (메모리 절약)
             try:
