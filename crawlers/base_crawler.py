@@ -51,24 +51,39 @@ class BaseCrawler(ABC):
             return self.driver
 
     def _close_driver(self):
-        """Selenium 드라이버 종료 (스레드 안전)"""
-        with self._driver_lock:  # 락으로 보호
+        """Selenium 드라이버 종료 - 모든 Chrome 프로세스 강제 종료"""
+        with self._driver_lock:
             if self.driver:
                 try:
                     print(
                         f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}"
                     )
-                    # Chrome 프로세스 강제 종료
+
+                    # 1. Selenium quit 시도
                     try:
-                        self.driver.service.process.terminate()  # 정상 종료 시도
+                        self.driver.quit()
                     except:
                         pass
+
+                    # 2. Service 프로세스 강제 종료
                     try:
-                        self.driver.service.process.kill()  # 강제 종료
+                        if self.driver.service.process:
+                            self.driver.service.process.terminate()
+                            time.sleep(0.5)
+                            self.driver.service.process.kill()
                     except:
                         pass
-                    self.driver.quit()
+
+                    # 3. 수집한 모든 PID 강제 종료
+                    for pid in self._chrome_pids:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except:
+                            pass
+
+                    self._chrome_pids.clear()
                     print(f"[DEBUG] Chrome driver closed successfully")
+
                 except Exception as e:
                     print(f"[DEBUG] Error closing driver: {e}")
                 finally:
