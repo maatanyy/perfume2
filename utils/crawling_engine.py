@@ -117,26 +117,22 @@ class CrawlingEngine:
                     raise ValueError(f"{job.site_name} 사이트는 지원되지 않습니다.")
 
             results = []
-            batch_size = 5  # 배치 크기 (메모리 최적화: 10 -> 5)
-            max_workers = 2  # 병렬 처리 워커 수 (메모리 최적화: 3 -> 2)
-
-            # 배치 레벨 크롤러 캐시는 위에서 이미 초기화됨
+            batch_size = 5  # 배치 크기
+            max_workers = 1  # 순차 처리 (Chrome 폭발 방지)
 
             for i in range(0, len(products), batch_size):
                 if self.job_cancelled.get(job_id, False):
                     job.cancel()
                     self._add_log(job_id, "INFO", "크롤링이 취소되었습니다.")
-                    # 캐시된 크롤러 정리
-                    for cached_crawler in batch_crawler_cache.values():
-                        try:
-                            cached_crawler._close_driver()
-                        except:
-                            pass
-                    return
+                    break
 
                 batch = products[i : i + batch_size]
                 batch_num = (i // batch_size) + 1
                 total_batches = (len(products) + batch_size - 1) // batch_size
+                
+                # 배치 레벨 crawler_cache 생성 (배치 내 재사용)
+                batch_crawler_cache = {}
+
                 self._add_log(
                     job_id,
                     "INFO",
@@ -144,7 +140,7 @@ class CrawlingEngine:
                 )
                 batch_results = []
 
-                # 매 배치마다 새 ThreadPoolExecutor 생성 → Chrome 폭발 방지 위해 1개만
+                # 순차 처리 (max_workers=1)
                 executor = ThreadPoolExecutor(max_workers=1)
                 try:
                     future_to_product = {
@@ -153,6 +149,7 @@ class CrawlingEngine:
                             product,
                             crawler,
                             job_id,
+                            batch_crawler_cache,  # 캐시 전달
                         ): product
                         for product in batch
                     }
@@ -189,9 +186,16 @@ class CrawlingEngine:
                                 }
                             )
                 finally:
-                    # ThreadPoolExecutor 명시적 종료 (스레드 완전 종료 보장)
                     executor.shutdown(wait=True)
                     del executor
+                    
+                    # 배치 완료 후 크롤러 정리
+                    for cached_crawler in batch_crawler_cache.values():
+                        try:
+                            cached_crawler._close_driver()
+                        except:
+                            pass
+                    batch_crawler_cache.clear()
 
                 results.extend(batch_results)
 
@@ -215,14 +219,7 @@ class CrawlingEngine:
                 )
 
                 if i + batch_size < len(products):
-                    time.sleep(0.2)  # 배치 간 대기 시간 단축 (0.3 -> 0.2)
-
-            # 모든 배치 완료 후 크롤러 정리
-            for cached_crawler in batch_crawler_cache.values():
-                try:
-                    cached_crawler._close_driver()
-                except:
-                    pass
+                    time.sleep(0.2)  # 배치 간 대기 시간
 
             # 결과 저장 (Excel 파일 생성)
             result_file = self._save_results(job_id, results, job.site_name)
@@ -352,21 +349,11 @@ class CrawlingEngine:
         product: Dict,
         default_crawler,
         job_id: int,
+        crawler_cache: Dict = None,
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
-            return self._crawl_product(product, default_crawler, job_id, None)
-
-            # 제품 크롤링 완료 후 즉시 Chrome 정리 (메모리 절약)
-            try:
-                if hasattr(thread_local, "ssg_crawler"):
-                    thread_local.ssg_crawler._close_driver()
-                if hasattr(thread_local, "cj_crawler"):
-                    thread_local.cj_crawler._close_driver()
-            except:
-                pass
-
-            return result
+            return self._crawl_product(product, default_crawler, job_id, crawler_cache)
         except Exception as e:
             product_name = str(product.get("product_name", "Unknown"))
             if len(product_name) > 20:
