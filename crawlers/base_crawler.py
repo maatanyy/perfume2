@@ -123,8 +123,20 @@ class BaseCrawler(ABC):
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
                 driver.get(url)
                 time.sleep(wait_time)
+                
+                # JavaScript 완료 대기
+                try:
+                    driver.execute_script("return document.readyState")
+                    time.sleep(1)  # 추가 대기
+                except:
+                    pass
+                
                 html = driver.page_source
                 print(f"[DEBUG] Page loaded, HTML length: {len(html)}")
+                
+                if len(html) < 5000:
+                    print(f"[WARNING] HTML too short ({len(html)} bytes), possible bot detection")
+                
                 return html
             except Exception as e:
                 print(f"[ERROR] Selenium으로 페이지 로드 실패: {e}")
