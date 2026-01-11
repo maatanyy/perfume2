@@ -197,8 +197,12 @@ class BaseCrawler(ABC):
         """사이트별 대기 시간 결정"""
         url_lower = url.lower()
         if "ssg.com" in url_lower:
-            return 4  # SSG 대기 시간 최적화 (6초 → 4초)
-        return 2  # 기본 대기 시간 최적화
+            return 5  # SSG 대기 시간
+        elif "shinsegae" in url_lower:
+            return 8  # 신세계TV쇼핑 - JavaScript 많음
+        elif "cjonstyle" in url_lower:
+            return 5
+        return 3  # 기본 대기 시간
 
     def __del__(self):
         """소멸자 - 드라이버 정리 (중요!)"""
