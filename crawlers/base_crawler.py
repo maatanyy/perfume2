@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import threading
 
 
 class BaseCrawler(ABC):
@@ -25,36 +26,39 @@ class BaseCrawler(ABC):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
         )
+        self._driver_lock = threading.Lock()  # 스레드 안전성
 
     def _get_driver(self):
-        """Selenium 드라이버 생성"""
-        if self.driver is None:
-            chrome_options = Options()
-            chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument(
-                "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
+        """Selenium 드라이버 생성 (스레드 안전)"""
+        with self._driver_lock:  # 락으로 보호
+            if self.driver is None:
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument(
+                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                )
 
-            try:
-                self.driver = webdriver.Chrome(options=chrome_options)
-            except Exception as e:
-                print(f"Chrome 드라이버 생성 실패: {e}")
-                self.use_selenium = False
+                try:
+                    self.driver = webdriver.Chrome(options=chrome_options)
+                except Exception as e:
+                    print(f"Chrome 드라이버 생성 실패: {e}")
+                    self.use_selenium = False
 
-        return self.driver
+            return self.driver
 
     def _close_driver(self):
-        """Selenium 드라이버 종료"""
-        if self.driver:
-            try:
-                self.driver.quit()
-            except:
-                pass
-            self.driver = None
+        """Selenium 드라이버 종료 (스레드 안전)"""
+        with self._driver_lock:  # 락으로 보호
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+                self.driver = None
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
         """페이지 가져오기"""
