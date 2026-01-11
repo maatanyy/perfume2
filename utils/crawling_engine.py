@@ -111,8 +111,8 @@ class CrawlingEngine:
                     raise ValueError(f"{job.site_name} 사이트는 지원되지 않습니다.")
 
             results = []
-            batch_size = 10  # 배치 크기
-            max_workers = 3  # 병렬 처리 워커 수 (메모리 최적화: 5 -> 3)
+            batch_size = 5  # 배치 크기 (메모리 최적화: 10 -> 5)
+            max_workers = 2  # 병렬 처리 워커 수 (메모리 최적화: 3 -> 2)
 
             for i in range(0, len(products), batch_size):
                 if self.job_cancelled.get(job_id, False):

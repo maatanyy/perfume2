@@ -84,46 +84,50 @@ class BaseCrawler(ABC):
 
     def crawl_price(self, url: str, max_retries: int = 2) -> Dict:
         """가격 크롤링 (재시도 로직 포함)"""
-        for attempt in range(1, max_retries + 1):
-            try:
-                wait_time = self.get_wait_time(url)
-                html = self.fetch_page(url, wait_time)
+        try:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    wait_time = self.get_wait_time(url)
+                    html = self.fetch_page(url, wait_time)
 
-                if not html:
-                    raise Exception("페이지를 가져올 수 없습니다.")
+                    if not html:
+                        raise Exception("페이지를 가져올 수 없습니다.")
 
-                result = self.extract_price(html, url)
+                    result = self.extract_price(html, url)
 
-                # 가격이 정상적으로 추출되었는지 확인
-                if result.get("상품 가격") is not None:
-                    return result
+                    # 가격이 정상적으로 추출되었는지 확인
+                    if result.get("상품 가격") is not None:
+                        return result
 
-                # 가격이 없으면 재시도
-                if attempt < max_retries:
+                    # 가격이 없으면 재시도
+                    if attempt < max_retries:
+                        time.sleep(1 * attempt)
+
+                except Exception as e:
+                    if attempt == max_retries:
+                        return {
+                            "상품 url": url,
+                            "상품 가격": None,
+                            "배송비": None,
+                            "배송비 여부": "크롤링 실패",
+                            "최종 가격": None,
+                            "에러 발생": str(e),
+                            "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
                     time.sleep(1 * attempt)
 
-            except Exception as e:
-                if attempt == max_retries:
-                    return {
-                        "상품 url": url,
-                        "상품 가격": None,
-                        "배송비": None,
-                        "배송비 여부": "크롤링 실패",
-                        "최종 가격": None,
-                        "에러 발생": str(e),
-                        "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                time.sleep(1 * attempt)
-
-        # 모든 재시도 실패
-        return {
-            "상품 url": url,
-            "상품 가격": None,
-            "배송비": None,
-            "배송비 여부": "모든 재시도 실패",
-            "최종 가격": None,
-            "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
+            # 모든 재시도 실패
+            return {
+                "상품 url": url,
+                "상품 가격": None,
+                "배송비": None,
+                "배송비 여부": "모든 재시도 실패",
+                "최종 가격": None,
+                "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        finally:
+            # 반드시 Chrome 드라이버 종료 (메모리 누수 방지)
+            self._close_driver()
 
     def get_wait_time(self, url: str) -> int:
         """사이트별 대기 시간 결정"""
