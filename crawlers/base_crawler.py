@@ -39,13 +39,16 @@ class BaseCrawler(ABC):
             if self.driver is None:
                 print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
                 chrome_options = Options()
-                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--headless=new")  # 최신 headless 모드
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 감지 방지
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
                 chrome_options.add_argument(
-                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
 
                 try:
@@ -123,20 +126,22 @@ class BaseCrawler(ABC):
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
                 driver.get(url)
                 time.sleep(wait_time)
-                
+
                 # JavaScript 완료 대기
                 try:
                     driver.execute_script("return document.readyState")
                     time.sleep(1)  # 추가 대기
                 except:
                     pass
-                
+
                 html = driver.page_source
                 print(f"[DEBUG] Page loaded, HTML length: {len(html)}")
-                
+
                 if len(html) < 5000:
-                    print(f"[WARNING] HTML too short ({len(html)} bytes), possible bot detection")
-                
+                    print(
+                        f"[WARNING] HTML too short ({len(html)} bytes), possible bot detection"
+                    )
+
                 return html
             except Exception as e:
                 print(f"[ERROR] Selenium으로 페이지 로드 실패: {e}")
