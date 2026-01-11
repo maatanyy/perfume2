@@ -266,7 +266,7 @@ class CrawlingEngine:
             from crawlers.shinsegae_crawler import ShinsegaeCrawler
             from crawlers.lotte_crawler import LotteCrawler
             from crawlers.gs_crawler import GSCrawler
-            
+
             url_lower = url.lower()
 
             if "ssg.com" in url_lower and "shinsegaetvshopping.com" not in url_lower:
@@ -298,18 +298,28 @@ class CrawlingEngine:
                 waffle_data = crawler.crawl_price(url)
                 result["prices"].append({"seller": "waffle", **waffle_data})
                 price_info = f"{waffle_data.get('상품 가격', 'N/A')}원"
-                result["logs"].append(("INFO", f"✓ {product_name_short} Waffle: {price_info}"))
+                result["logs"].append(
+                    ("INFO", f"✓ {product_name_short} Waffle: {price_info}")
+                )
             except Exception as e:
-                result["logs"].append(("ERROR", f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}"))
-                    )
+                result["logs"].append(
+                    ("ERROR", f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}")
                 )
                 result["prices"].append({"seller": "waffle", "error": str(e)})
+            finally:
+                # Chrome 즉시 정리
+                if crawler:
+                    try:
+                        crawler._close_driver()
+                    except:
+                        pass
 
         # 경쟁사 크롤링
         for competitor in product.get("competitors", []):
             if competitor.get("url"):
                 url = competitor["url"]
                 seller_name = competitor["name"]
+                crawler = None
                 try:
                     crawler = get_crawler_for_url(url)
                     comp_data = crawler.crawl_price(url)
@@ -329,6 +339,13 @@ class CrawlingEngine:
                         )
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
+                finally:
+                    # Chrome 즉시 정리
+                    if crawler:
+                        try:
+                            crawler._close_driver()
+                        except:
+                            pass
 
         # 제품 크롤링 완료 (Chrome은 배치 끝날 때 정리)
         return result
