@@ -26,9 +26,19 @@ class BaseCrawler(ABC):
         self._chrome_pids = []  # Chrome 프로세스 PID 추적
         self._driver_lock = threading.Lock()  # 스레드 안전성
         self.session = requests.Session()
+        # 더 현실적인 User-Agent 및 헤더 (봇 감지 우회)
         self.session.headers.update(
             {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Cache-Control": "max-age=0",
             }
         )
         self._driver_lock = threading.Lock()  # 스레드 안전성
@@ -44,28 +54,67 @@ class BaseCrawler(ABC):
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--window-size=1920,1080")
+
+                # 봇 감지 우회 옵션 (통합)
                 chrome_options.add_argument(
                     "--disable-blink-features=AutomationControlled"
-                )  # 자동화 감지 방지
-                chrome_options.add_experimental_option(
-                    "excludeSwitches", ["enable-automation"]
                 )
-                chrome_options.add_experimental_option("useAutomationExtension", False)
+                chrome_options.add_argument("--disable-infobars")
+                chrome_options.add_argument("--disable-extensions")
+                chrome_options.add_argument("--no-first-run")
+                chrome_options.add_argument("--no-default-browser-check")
+                chrome_options.add_argument("--disable-default-apps")
+                chrome_options.add_argument("--lang=ko-KR")
+                chrome_options.add_argument(
+                    "--accept-lang=ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+                )
+
+                # 더 현실적인 User-Agent
                 chrome_options.add_argument(
                     "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
 
+                # 자동화 감지 방지 (통합)
+                chrome_options.add_experimental_option(
+                    "excludeSwitches", ["enable-automation", "enable-logging"]
+                )
+                chrome_options.add_experimental_option("useAutomationExtension", False)
+
                 try:
                     self.driver = webdriver.Chrome(options=chrome_options)
 
-                    # 자동화 감지 방지 JavaScript 실행
+                    # 자동화 감지 방지 JavaScript 실행 (강화)
                     self.driver.execute_cdp_cmd(
                         "Page.addScriptToEvaluateOnNewDocument",
                         {
                             "source": """
+                            // webdriver 속성 숨기기
                             Object.defineProperty(navigator, 'webdriver', {
                                 get: () => undefined
-                            })
+                            });
+                            
+                            // chrome 속성 추가
+                            window.chrome = {
+                                runtime: {}
+                            };
+                            
+                            // plugins 속성 추가
+                            Object.defineProperty(navigator, 'plugins', {
+                                get: () => [1, 2, 3, 4, 5]
+                            });
+                            
+                            // languages 속성 추가
+                            Object.defineProperty(navigator, 'languages', {
+                                get: () => ['ko-KR', 'ko', 'en-US', 'en']
+                            });
+                            
+                            // permissions 속성 추가
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({ state: Notification.permission }) :
+                                    originalQuery(parameters)
+                            );
                         """
                         },
                     )
@@ -141,44 +190,102 @@ class BaseCrawler(ABC):
 
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
                 driver.get(url)
-                
+
                 # SSG Shopping은 더 긴 대기 시간 필요
                 url_lower = url.lower()
-                if "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower:
-                    wait_time = max(wait_time, 8)  # 최소 8초 대기
-                
+                is_ssg_shopping = (
+                    "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower
+                )
+
+                if is_ssg_shopping:
+                    wait_time = max(wait_time, 10)  # 최소 10초 대기
+                    # 추가로 페이지 스크롤 (동적 콘텐츠 로딩 유도)
+                    try:
+                        driver.execute_script(
+                            "window.scrollTo(0, document.body.scrollHeight/3);"
+                        )
+                        time.sleep(2)
+                        driver.execute_script("window.scrollTo(0, 0);")
+                        time.sleep(1)
+                    except:
+                        pass
+
                 time.sleep(wait_time)
 
                 # JavaScript 완료 대기 - 여러 번 확인
                 try:
-                    for _ in range(3):
-                        ready_state = driver.execute_script("return document.readyState")
+                    for attempt in range(5):  # 최대 5번 시도
+                        ready_state = driver.execute_script(
+                            "return document.readyState"
+                        )
                         if ready_state == "complete":
                             # SSG Shopping의 경우 추가로 가격 요소가 로드될 때까지 대기
-                            if "shinsegaetvshopping.com" in url_lower:
+                            if is_ssg_shopping:
                                 try:
-                                    # 가격 요소가 로드될 때까지 최대 5초 대기
-                                    from selenium.webdriver.support.ui import WebDriverWait
-                                    from selenium.webdriver.common.by import By
-                                    from selenium.webdriver.support import expected_conditions as EC
-                                    
-                                    WebDriverWait(driver, 5).until(
-                                        lambda d: d.find_elements(By.CSS_SELECTOR, ".price--3, ._salePrice, ._bestPrice, .div-best")
+                                    # 가격 요소가 로드될 때까지 최대 10초 대기
+                                    from selenium.webdriver.support.ui import (
+                                        WebDriverWait,
                                     )
-                                except:
-                                    pass  # 요소를 못 찾아도 계속 진행
+                                    from selenium.webdriver.common.by import By
+                                    from selenium.webdriver.support import (
+                                        expected_conditions as EC,
+                                    )
+
+                                    # 여러 선택자 시도
+                                    selectors = [
+                                        ".price--3",
+                                        "._salePrice",
+                                        "._bestPrice",
+                                        ".div-best ._bestPrice",
+                                        ".cdtl_new_price.notranslate .ssg_price",
+                                        ".price_total .ssg_price",
+                                    ]
+
+                                    found = False
+                                    for selector in selectors:
+                                        try:
+                                            elements = WebDriverWait(driver, 3).until(
+                                                EC.presence_of_all_elements_located(
+                                                    (By.CSS_SELECTOR, selector)
+                                                )
+                                            )
+                                            if elements:
+                                                found = True
+                                                break
+                                        except:
+                                            continue
+
+                                    if not found:
+                                        # 요소를 찾지 못했더라도 추가 대기
+                                        time.sleep(3)
+                                except Exception as e:
+                                    print(f"[DEBUG] SSG Shopping 요소 대기 실패: {e}")
+                                    time.sleep(3)  # 실패해도 추가 대기
                             break
                         time.sleep(1)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"[DEBUG] Ready state 체크 실패: {e}")
+                    time.sleep(2)  # 실패 시에도 대기
 
                 html = driver.page_source
                 print(f"[DEBUG] Page loaded, HTML length: {len(html)}")
 
+                # HTML이 너무 짧으면 봇 감지 가능성 - 재시도
                 if len(html) < 5000:
                     print(
-                        f"[WARNING] HTML too short ({len(html)} bytes), possible bot detection"
+                        f"[WARNING] HTML too short ({len(html)} bytes), possible bot detection - 재시도 중..."
                     )
+                    # 추가 대기 후 재시도
+                    time.sleep(5)
+                    driver.refresh()  # 페이지 새로고침
+                    time.sleep(wait_time)
+                    html = driver.page_source
+                    print(f"[DEBUG] After retry, HTML length: {len(html)}")
+
+                    if len(html) < 5000:
+                        print(
+                            f"[WARNING] 재시도 후에도 HTML이 짧음 ({len(html)} bytes), 봇 차단 가능성"
+                        )
 
                 return html
             except Exception as e:
@@ -199,17 +306,35 @@ class BaseCrawler(ABC):
         pass
 
     def crawl_price(
-        self, url: str, max_retries: int = 2, auto_close: bool = False
+        self, url: str, max_retries: int = 3, auto_close: bool = False
     ) -> Dict:
         """가격 크롤링 (재시도 로직 포함)"""
         try:
             for attempt in range(1, max_retries + 1):
                 try:
                     wait_time = self.get_wait_time(url)
+
+                    # SSG Shopping의 경우 재시도 시 더 긴 대기
+                    url_lower = url.lower()
+                    if (
+                        "shinsegaetvshopping.com" in url_lower
+                        or "ssg_shoping" in url_lower
+                    ) and attempt > 1:
+                        wait_time = max(wait_time, 12)  # 재시도 시 더 긴 대기
+
                     html = self.fetch_page(url, wait_time)
 
                     if not html:
                         raise Exception("페이지를 가져올 수 없습니다.")
+
+                    # HTML이 너무 짧으면 재시도
+                    if len(html) < 2000:
+                        print(
+                            f"[WARNING] Attempt {attempt}: HTML too short ({len(html)} bytes), retrying..."
+                        )
+                        if attempt < max_retries:
+                            time.sleep(3 * attempt)  # 재시도 간격 증가
+                            continue
 
                     result = self.extract_price(html, url)
 
@@ -219,9 +344,13 @@ class BaseCrawler(ABC):
 
                     # 가격이 없으면 재시도
                     if attempt < max_retries:
-                        time.sleep(1 * attempt)
+                        print(
+                            f"[WARNING] Attempt {attempt}: 가격 추출 실패, 재시도 중..."
+                        )
+                        time.sleep(2 * attempt)
 
                 except Exception as e:
+                    print(f"[ERROR] Attempt {attempt} failed: {str(e)}")
                     if attempt == max_retries:
                         return {
                             "상품 url": url,
@@ -232,7 +361,7 @@ class BaseCrawler(ABC):
                             "에러 발생": str(e),
                             "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
-                    time.sleep(1 * attempt)
+                    time.sleep(2 * attempt)  # 재시도 간격 증가
 
             # 모든 재시도 실패
             return {

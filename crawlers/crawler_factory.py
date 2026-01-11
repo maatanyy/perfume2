@@ -22,7 +22,13 @@ def get_crawler(site_name: str) -> Optional[BaseCrawler]:
     """사이트명에 따라 적절한 크롤러 반환 (매번 새 인스턴스)"""
     site_lower = site_name.lower()
 
+    # SSG Shopping 우선 체크 (shinsegaetvshopping.com은 SSG Shopping이므로 SSGCrawler 사용)
     if (
+        "ssg_shoping" in site_lower
+        or "shinsegaetvshopping" in site_lower
+    ):
+        return SSGCrawler()  # SSG Shopping은 SSG 크롤러 사용
+    elif (
         "ssg" in site_lower
         and "shopping" not in site_lower
         and "shoping" not in site_lower
@@ -30,11 +36,7 @@ def get_crawler(site_name: str) -> Optional[BaseCrawler]:
         return SSGCrawler()
     elif "cj" in site_lower or "cjonstyle" in site_lower:
         return CJCrawler()
-    elif (
-        "ssg_shoping" in site_lower
-        or "shinsegaetvshopping" in site_lower
-        or "신세계" in site_lower
-    ):
+    elif "신세계" in site_lower:  # 신세계는 별도 크롤러 사용 (shinsegaetvshopping 제외)
         return ShinsegaeCrawler()
     elif "롯데" in site_lower or "lotte" in site_lower or "lotteimall" in site_lower:
         return LotteCrawler()
@@ -51,13 +53,14 @@ def get_crawler_by_url(url: str) -> Optional[BaseCrawler]:
 
     url_lower = url.lower()
 
-    # 도메인 추출 및 크롤러 생성
-    if "ssg.com" in url_lower and "shinsegaetvshopping.com" not in url_lower:
+    # 도메인 추출 및 크롤러 생성 (SSG Shopping 우선 체크)
+    # shinsegaetvshopping.com은 SSG Shopping이므로 SSGCrawler 사용
+    if "shinsegaetvshopping.com" in url_lower:
+        return SSGCrawler()  # SSG Shopping은 SSG 크롤러 사용
+    elif "ssg.com" in url_lower:
         return SSGCrawler()
     elif "cjonstyle.com" in url_lower:
         return CJCrawler()
-    elif "shinsegaetvshopping.com" in url_lower:
-        return ShinsegaeCrawler()
     elif "lotteimall.com" in url_lower:
         return LotteCrawler()
     elif "gsshop.com" in url_lower:
