@@ -37,6 +37,7 @@ class BaseCrawler(ABC):
         """Selenium 드라이버 생성 (스레드 안전)"""
         with self._driver_lock:  # 락으로 보호
             if self.driver is None:
+                print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
                 chrome_options = Options()
                 chrome_options.add_argument("--headless")
                 chrome_options.add_argument("--no-sandbox")
@@ -113,13 +114,21 @@ class BaseCrawler(ABC):
         if self.use_selenium:
             try:
                 driver = self._get_driver()
+                if driver is None:
+                    print(
+                        f"[ERROR] Chrome driver is None for {self.__class__.__name__}"
+                    )
+                    return None
+
+                print(f"[DEBUG] Loading URL: {url[:50]}...")
                 driver.get(url)
                 time.sleep(wait_time)
-                return driver.page_source
+                html = driver.page_source
+                print(f"[DEBUG] Page loaded, HTML length: {len(html)}")
+                return html
             except Exception as e:
-                print(f"Selenium으로 페이지 로드 실패: {e}")
-                # requests로 폴백
-                self.use_selenium = False
+                print(f"[ERROR] Selenium으로 페이지 로드 실패: {e}")
+                return None
 
         try:
             response = self.session.get(url, timeout=30)

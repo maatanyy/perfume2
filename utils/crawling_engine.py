@@ -291,7 +291,7 @@ class CrawlingEngine:
 
         # 제품별로 사용할 crawler 딕셔너리 (사이트별로 재사용)
         site_crawlers = {}
-        
+
         try:
             # Waffle 크롤링
             if product.get("waffle") and product["waffle"].get("url"):
@@ -300,7 +300,7 @@ class CrawlingEngine:
                     site_key = "waffle"
                     if site_key not in site_crawlers:
                         site_crawlers[site_key] = get_crawler_for_url(url)
-                    
+
                     waffle_data = site_crawlers[site_key].crawl_price(url)
                     result["prices"].append({"seller": "waffle", **waffle_data})
                     price_info = f"{waffle_data.get('상품 가격', 'N/A')}원"
@@ -333,10 +333,10 @@ class CrawlingEngine:
                             site_key = "gs"
                         else:
                             site_key = seller_name
-                        
+
                         if site_key not in site_crawlers:
                             site_crawlers[site_key] = get_crawler_for_url(url)
-                        
+
                         comp_data = site_crawlers[site_key].crawl_price(url)
                         result["prices"].append({"seller": seller_name, **comp_data})
                         price_info = f"{comp_data.get('상품 가격', 'N/A')}원"
@@ -353,8 +353,10 @@ class CrawlingEngine:
                                 f"✗ {product_name_short} {seller_name} 실패: {str(e)[:50]}",
                             )
                         )
-                        result["prices"].append({"seller": seller_name, "error": str(e)})
-        
+                        result["prices"].append(
+                            {"seller": seller_name, "error": str(e)}
+                        )
+
         finally:
             # 제품 크롤링 완료 - 모든 crawler 정리
             for crawler in site_crawlers.values():
