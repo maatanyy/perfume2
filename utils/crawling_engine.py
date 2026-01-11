@@ -144,8 +144,8 @@ class CrawlingEngine:
                 )
                 batch_results = []
 
-                # 매 배치마다 새 ThreadPoolExecutor 생성 → 배치 끝나면 스레드 완전 종료
-                executor = ThreadPoolExecutor(max_workers=max_workers)
+                # 매 배치마다 새 ThreadPoolExecutor 생성 → Chrome 폭발 방지 위해 1개만
+                executor = ThreadPoolExecutor(max_workers=1)
                 try:
                     future_to_product = {
                         executor.submit(
