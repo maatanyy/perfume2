@@ -4,9 +4,16 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional
 from bs4 import BeautifulSoup
 import requests
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+
+try:
+    import undetected_chromedriver as uc
+
+    UNDETECTED_AVAILABLE = True
+except ImportError:
+    UNDETECTED_AVAILABLE = False
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -44,97 +51,122 @@ class BaseCrawler(ABC):
         self._driver_lock = threading.Lock()  # 스레드 안전성
 
     def _get_driver(self):
-        """Selenium 드라이버 생성 (스레드 안전)"""
+        """Selenium 드라이버 생성 (스레드 안전) - undetected-chromedriver 우선 사용"""
         with self._driver_lock:  # 락으로 보호
             if self.driver is None:
                 print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
-                chrome_options = Options()
-                chrome_options.add_argument("--headless=new")  # 최신 headless 모드
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-gpu")
-                chrome_options.add_argument("--window-size=1920,1080")
 
-                # 봇 감지 우회 옵션 (통합)
-                chrome_options.add_argument(
-                    "--disable-blink-features=AutomationControlled"
-                )
-                chrome_options.add_argument("--disable-infobars")
-                chrome_options.add_argument("--disable-extensions")
-                chrome_options.add_argument("--no-first-run")
-                chrome_options.add_argument("--no-default-browser-check")
-                chrome_options.add_argument("--disable-default-apps")
-                chrome_options.add_argument("--lang=ko-KR")
-                chrome_options.add_argument(
-                    "--accept-lang=ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
-                )
+                # undetected-chromedriver 사용 (봇 감지 우회)
+                if UNDETECTED_AVAILABLE:
+                    try:
+                        print("[DEBUG] Using undetected-chromedriver (봇 감지 우회)")
+                        options = uc.ChromeOptions()
+                        options.add_argument("--headless=new")  # headless 모드
+                        options.add_argument("--no-sandbox")
+                        options.add_argument("--disable-dev-shm-usage")
+                        options.add_argument("--disable-gpu")
+                        options.add_argument("--window-size=1920,1080")
+                        options.add_argument("--lang=ko-KR")
+                        options.add_argument(
+                            "--accept-lang=ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+                        )
 
-                # 더 현실적인 User-Agent
-                chrome_options.add_argument(
-                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
+                        # undetected-chromedriver로 드라이버 생성 (자동으로 봇 감지 우회)
+                        self.driver = uc.Chrome(
+                            options=options, version_main=None, use_subprocess=False
+                        )
+                        print("[DEBUG] Undetected Chrome driver created successfully")
+                    except Exception as e:
+                        print(
+                            f"[WARNING] undetected-chromedriver 실패, 일반 selenium 사용: {e}"
+                        )
+                        UNDETECTED_AVAILABLE = False  # 실패 시 일반 드라이버 사용
 
-                # 자동화 감지 방지 (통합)
-                chrome_options.add_experimental_option(
-                    "excludeSwitches", ["enable-automation", "enable-logging"]
-                )
-                chrome_options.add_experimental_option("useAutomationExtension", False)
+                # undetected-chromedriver를 사용할 수 없으면 일반 selenium 사용
+                if not UNDETECTED_AVAILABLE or self.driver is None:
+                    print("[DEBUG] Using standard selenium Chrome driver")
+                    from selenium.webdriver.chrome.options import Options
 
-                try:
-                    self.driver = webdriver.Chrome(options=chrome_options)
+                    chrome_options = Options()
+                    chrome_options.add_argument("--headless=new")
+                    chrome_options.add_argument("--no-sandbox")
+                    chrome_options.add_argument("--disable-dev-shm-usage")
+                    chrome_options.add_argument("--disable-gpu")
+                    chrome_options.add_argument("--window-size=1920,1080")
 
-                    # 자동화 감지 방지 JavaScript 실행 (강화)
-                    self.driver.execute_cdp_cmd(
-                        "Page.addScriptToEvaluateOnNewDocument",
-                        {
-                            "source": """
-                            // webdriver 속성 숨기기
-                            Object.defineProperty(navigator, 'webdriver', {
-                                get: () => undefined
-                            });
-                            
-                            // chrome 속성 추가
-                            window.chrome = {
-                                runtime: {}
-                            };
-                            
-                            // plugins 속성 추가
-                            Object.defineProperty(navigator, 'plugins', {
-                                get: () => [1, 2, 3, 4, 5]
-                            });
-                            
-                            // languages 속성 추가
-                            Object.defineProperty(navigator, 'languages', {
-                                get: () => ['ko-KR', 'ko', 'en-US', 'en']
-                            });
-                            
-                            // permissions 속성 추가
-                            const originalQuery = window.navigator.permissions.query;
-                            window.navigator.permissions.query = (parameters) => (
-                                parameters.name === 'notifications' ?
-                                    Promise.resolve({ state: Notification.permission }) :
-                                    originalQuery(parameters)
-                            );
-                        """
-                        },
+                    # 봇 감지 우회 옵션
+                    chrome_options.add_argument(
+                        "--disable-blink-features=AutomationControlled"
+                    )
+                    chrome_options.add_argument("--disable-infobars")
+                    chrome_options.add_argument("--disable-extensions")
+                    chrome_options.add_argument("--no-first-run")
+                    chrome_options.add_argument("--no-default-browser-check")
+                    chrome_options.add_argument("--disable-default-apps")
+                    chrome_options.add_argument("--lang=ko-KR")
+                    chrome_options.add_argument(
+                        "--accept-lang=ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
                     )
 
-                    # Chrome 관련 PID 수집 (driver, chromedriver, chrome 프로세스)
-                    try:
-                        if self.driver.service.process:
-                            driver_pid = self.driver.service.process.pid
-                            self._chrome_pids.append(driver_pid)
-                            # 자식 프로세스도 추적
-                            parent = psutil.Process(driver_pid)
-                            for child in parent.children(recursive=True):
-                                self._chrome_pids.append(child.pid)
-                            print(f"[DEBUG] Chrome PIDs tracked: {self._chrome_pids}")
-                    except Exception as e:
-                        print(f"[DEBUG] PID tracking failed: {e}")
+                    # User-Agent
+                    chrome_options.add_argument(
+                        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
 
+                    # 자동화 감지 방지
+                    chrome_options.add_experimental_option(
+                        "excludeSwitches", ["enable-automation", "enable-logging"]
+                    )
+                    chrome_options.add_experimental_option(
+                        "useAutomationExtension", False
+                    )
+
+                    try:
+                        from selenium import webdriver
+
+                        self.driver = webdriver.Chrome(options=chrome_options)
+
+                        # 자동화 감지 방지 JavaScript 실행
+                        self.driver.execute_cdp_cmd(
+                            "Page.addScriptToEvaluateOnNewDocument",
+                            {
+                                "source": """
+                                Object.defineProperty(navigator, 'webdriver', {
+                                    get: () => undefined
+                                });
+                                window.chrome = { runtime: {} };
+                                Object.defineProperty(navigator, 'plugins', {
+                                    get: () => [1, 2, 3, 4, 5]
+                                });
+                                Object.defineProperty(navigator, 'languages', {
+                                    get: () => ['ko-KR', 'ko', 'en-US', 'en']
+                                });
+                            """
+                            },
+                        )
+                    except Exception as e:
+                        print(f"Chrome 드라이버 생성 실패: {e}")
+                        self.use_selenium = False
+                        return None
+
+                # Chrome 관련 PID 수집 (driver, chromedriver, chrome 프로세스)
+                try:
+                    if (
+                        self.driver
+                        and hasattr(self.driver, "service")
+                        and self.driver.service
+                        and hasattr(self.driver.service, "process")
+                        and self.driver.service.process
+                    ):
+                        driver_pid = self.driver.service.process.pid
+                        self._chrome_pids.append(driver_pid)
+                        # 자식 프로세스도 추적
+                        parent = psutil.Process(driver_pid)
+                        for child in parent.children(recursive=True):
+                            self._chrome_pids.append(child.pid)
+                        print(f"[DEBUG] Chrome PIDs tracked: {self._chrome_pids}")
                 except Exception as e:
-                    print(f"Chrome 드라이버 생성 실패: {e}")
-                    self.use_selenium = False
+                    print(f"[DEBUG] PID tracking failed: {e}")
 
             return self.driver
 
