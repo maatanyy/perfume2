@@ -116,7 +116,7 @@ class CrawlingEngine:
             results = []
             batch_size = 5  # 배치 크기 (메모리 최적화: 10 -> 5)
             max_workers = 2  # 병렬 처리 워커 수 (메모리 최적화: 3 -> 2)
-            
+
             # 배치 레벨 크롤러 캐시 (제품마다 새로 만들지 않음)
             batch_crawler_cache = {}
 
@@ -200,14 +200,14 @@ class CrawlingEngine:
                 )
 
                 if i + batch_size < len(products):
-            
+                    time.sleep(0.2)  # 배치 간 대기 시간 단축 (0.3 -> 0.2)
+
             # 모든 배치 완료 후 크롤러 정리
             for cached_crawler in batch_crawler_cache.values():
                 try:
                     cached_crawler._close_driver()
                 except:
                     pass
-                    time.sleep(0.2)  # 배치 간 대기 시간 단축 (0.3 -> 0.2)
 
             # 결과 저장 (Excel 파일 생성)
             result_file = self._save_results(job_id, results, job.site_name)
@@ -222,7 +222,16 @@ class CrawlingEngine:
         except Exception as e:
             job.fail(str(e))
             self._add_log(job_id, "ERROR", f"크롤링 실패: {str(e)}")
-        finally:, crawler_cache: Dict = None) -> Dict:
+        finally:
+            # 스레드 정리
+            if job_id in self.active_jobs:
+                del self.active_jobs[job_id]
+            if job_id in self.job_cancelled:
+                del self.job_cancelled[job_id]
+
+    def _crawl_product(
+        self, product: Dict, default_crawler, job_id: int, crawler_cache: Dict = None
+    ) -> Dict:
         """단일 제품 크롤링 (URL 기반 크롤러 자동 선택)"""
         result = {
             "product_id": product["product_id"],
@@ -235,7 +244,7 @@ class CrawlingEngine:
         # 크롤러 캐시 (배치 레벨에서 전달받거나 없으면 생성)
         if crawler_cache is None:
             crawler_cache = {}
-        
+
         local_crawler_cache = {}  # 제품 내에서만 사용하는 임시 캐시
 
         def get_crawler_for_url(url: str):
@@ -249,19 +258,12 @@ class CrawlingEngine:
             if domain not in crawler_cache:
                 url_crawler = get_crawler_by_url(url)
                 crawler_cache[domain] = url_crawler if url_crawler else default_crawler
-            
+
             # 제품 내에서 재사용
             if domain not in local_crawler_cache:
                 local_crawler_cache[domain] = crawler_cache[domain]
 
-            selected_crawler = local_
-            domain = urlparse(url).netloc
-
-            if domain not in crawler_cache:
-                url_crawler = get_crawler_by_url(url)
-                crawler_cache[domain] = url_crawler if url_crawler else default_crawler
-
-            selected_crawler = crawler_cache[domain]
+            selected_crawler = local_crawler_cache[domain]
             crawler_name = selected_crawler.__class__.__name__
             result["logs"].append(
                 (
@@ -318,29 +320,29 @@ class CrawlingEngine:
                         )
                     )
                 except Exception as e:
-          제품 크롤링 완료 (배치 레벨에서 정리하므로 여기서는 안 함)                    result["prices"].append({"seller": seller_name, "error": str(e)})
+                    result["logs"].append(
+                        (
+                            "ERROR",
+                            f"✗ {product_name_short} {seller_name} 실패: {str(e)[:50]}",
+                        )
+                    )
+                    result["prices"].append({"seller": seller_name, "error": str(e)})
 
-        # 사용한 크롤러 정리 (Chrome 메모리 누수 방지)
-        for crawler in crawler_cache.values():
-            try:
-                crawler._close_driver()
-            except:
-                pass
-
+        # 제품 크롤링 완료 (배치 레벨에서 정리하므로 여기서는 크롤러 정리 안 함)
         return result
 
     def _crawl_product_safe(
-        self, product: Dict, default_crawler, site_name: str, job_id: int
+        self, product: Dict, default_crawler, job_id: int, crawler_cache: Dict = None
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
-            return self._crawl_product(product, default_crawler, site_name)
+            return self._crawl_product(product, default_crawler, job_id, crawler_cache)
         except Exception as e:
-            product_name = str(product.get("product_name", "Unknown")), crawler_cache: Dict = None
-    ) -> Dict:
-        """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
-        try:
-            return self._crawl_product(product, default_crawler, site_name, crawler_cach
+            product_name = str(product.get("product_name", "Unknown"))
+            if len(product_name) > 20:
+                product_name_short = product_name[:20] + "..."
+            else:
+                product_name_short = product_name
 
             return {
                 "product_id": product["product_id"],
