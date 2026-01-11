@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}크롤링 시작{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card">
+            <div class="card-header">
+                <h3>새 크롤링 시작</h3>
+            </div>
+            <div class="card-body">
+                <form method="POST" id="crawling-form">
+                    <div class="mb-3">
+                        <label for="spreadsheet_url" class="form-label">구글 시트 URL</label>
+                        <input type="text" class="form-control" id="spreadsheet_url" name="spreadsheet_url" 
+                               value="{{ spreadsheet_url }}" readonly>
+                        <small class="form-text text-muted">고정된 구글 시트를 사용합니다</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="sheet_name" class="form-label">사이트 선택 (시트 탭)</label>
+                        <select class="form-select" id="sheet_name" name="sheet_name" required>
+                            <option value="">크롤링할 사이트를 선택하세요</option>
+                            {% for sheet in sheets %}
+                            <option value="{{ sheet.title }}">{{ sheet.title }}</option>
+                            {% endfor %}
+                        </select>
+                        <small class="form-text text-muted">선택한 시트의 제품 목록을 해당 사이트에서 크롤링합니다</small>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">크롤링 시작</button>
+                        <a href="{{ url_for('dashboard.index') }}" class="btn btn-secondary">취소</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+

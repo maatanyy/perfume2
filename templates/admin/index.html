@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}관리자 대시보드{% endblock %}
+
+{% block content %}
+<h2>관리자 대시보드</h2>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header bg-warning">
+                <h4>승인 대기 중인 사용자 ({{ pending_users|length }})</h4>
+            </div>
+            <div class="card-body">
+                {% if pending_users %}
+                <div class="list-group">
+                    {% for user in pending_users %}
+                    <div class="list-group-item">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ user.email }}</h5>
+                            <small>{{ user.created_at.strftime('%Y-%m-%d') }}</small>
+                        </div>
+                        <form method="POST" action="{{ url_for('admin.approve_user', user_id=user.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-success">승인</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('admin.reject_user', user_id=user.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('정말 삭제하시겠습니까?')">거부</button>
+                        </form>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-muted">승인 대기 중인 사용자가 없습니다.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4>실행 중인 작업 ({{ active_jobs|length }})</h4>
+            </div>
+            <div class="card-body">
+                {% if active_jobs %}
+                <div class="list-group">
+                    {% for job in active_jobs %}
+                    <div class="list-group-item">
+                        <div class="d-flex w-100 justify-content-between">
+                            <div>
+                                <h5 class="mb-1">{{ job.site_name }} - {{ job.sheet_name }}</h5>
+                                <p class="mb-1">사용자: {{ job.user.email }}</p>
+                                <small>진행률: {{ job.progress }}%</small>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-muted">실행 중인 작업이 없습니다.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-4">
+    <a href="{{ url_for('admin.users') }}" class="btn btn-primary">전체 사용자 관리</a>
+</div>
+{% endblock %}
+

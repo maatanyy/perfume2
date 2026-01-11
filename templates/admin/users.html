@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}사용자 관리{% endblock %}
+
+{% block content %}
+<h2>사용자 관리</h2>
+
+<div class="card">
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>이메일</th>
+                    <th>승인 상태</th>
+                    <th>관리자</th>
+                    <th>가입일</th>
+                    <th>작업</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.email }}</td>
+                    <td>
+                        <span class="badge bg-{{ 'success' if user.is_approved else 'warning' }}">
+                            {{ '승인됨' if user.is_approved else '대기 중' }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="badge bg-{{ 'primary' if user.is_admin else 'secondary' }}">
+                            {{ '관리자' if user.is_admin else '일반' }}
+                        </span>
+                    </td>
+                    <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td>
+                        {% if not user.is_approved %}
+                        <form method="POST" action="{{ url_for('admin.approve_user', user_id=user.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-success">승인</button>
+                        </form>
+                        {% endif %}
+                        <form method="POST" action="{{ url_for('admin.toggle_admin', user_id=user.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-info">
+                                {{ '일반 사용자로' if user.is_admin else '관리자로' }}
+                            </button>
+                        </form>
+                        {% if user.id != current_user.id %}
+                        <form method="POST" action="{{ url_for('admin.reject_user', user_id=user.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('정말 삭제하시겠습니까?')">삭제</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+

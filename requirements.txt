@@ -1,0 +1,42 @@
+# Flask 및 웹 프레임워크
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-WTF==1.2.1
+Flask-Limiter==3.5.0
+WTForms==3.1.1
+
+# 데이터베이스
+SQLAlchemy==2.0.23
+
+# 인증 및 보안
+bcrypt==4.1.2
+python-dotenv==1.0.0
+
+# 작업 큐 (선택사항)
+Celery==5.3.4
+redis==5.0.1
+
+# 크롤링
+requests==2.31.0
+beautifulsoup4==4.12.2
+selenium==4.15.2
+lxml==4.9.3
+
+# 구글 시트 연동
+google-api-python-client==2.108.0
+google-auth==2.25.2
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# Excel/CSV 처리
+openpyxl==3.1.2
+xlsxwriter==3.1.9
+pandas==2.1.4
+
+# 실시간 업데이트 (선택사항)
+Flask-SocketIO==5.3.6
+
+# 유틸리티
+python-dateutil==2.8.2
+
