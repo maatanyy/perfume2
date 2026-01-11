@@ -44,24 +44,31 @@ class BaseCrawler(ABC):
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--window-size=1920,1080")
-                chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 감지 방지
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                chrome_options.add_experimental_option('useAutomationExtension', False)
+                chrome_options.add_argument(
+                    "--disable-blink-features=AutomationControlled"
+                )  # 자동화 감지 방지
+                chrome_options.add_experimental_option(
+                    "excludeSwitches", ["enable-automation"]
+                )
+                chrome_options.add_experimental_option("useAutomationExtension", False)
                 chrome_options.add_argument(
                     "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
 
                 try:
                     self.driver = webdriver.Chrome(options=chrome_options)
-                    
+
                     # 자동화 감지 방지 JavaScript 실행
-                    self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                        'source': '''
+                    self.driver.execute_cdp_cmd(
+                        "Page.addScriptToEvaluateOnNewDocument",
+                        {
+                            "source": """
                             Object.defineProperty(navigator, 'webdriver', {
                                 get: () => undefined
                             })
-                        '''
-                    })
+                        """
+                        },
+                    )
 
                     # Chrome 관련 PID 수집 (driver, chromedriver, chrome 프로세스)
                     try:

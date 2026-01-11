@@ -298,6 +298,19 @@ class CrawlingEngine:
                 url = product["waffle"]["url"]
                 try:
                     site_key = "waffle"
+                    # Waffle URL에서 실제 사이트 감지
+                    url_lower = url.lower()
+                    if "ssg.com" in url_lower and "shopping" not in url_lower:
+                        site_key = "ssg"
+                    elif "cjonstyle.com" in url_lower:
+                        site_key = "cj"
+                    elif "shinsegae" in url_lower:
+                        site_key = "shinsegae"
+                    elif "lotte" in url_lower:
+                        site_key = "lotte"
+                    elif "gsshop.com" in url_lower:
+                        site_key = "gs"
+                    
                     if site_key not in site_crawlers:
                         site_crawlers[site_key] = get_crawler_for_url(url)
 
@@ -321,13 +334,13 @@ class CrawlingEngine:
                     try:
                         # 같은 사이트면 crawler 재사용
                         url_lower = url.lower()
-                        if "ssg.com" in url_lower:
+                        if "ssg.com" in url_lower and "shopping" not in url_lower:
                             site_key = "ssg"
                         elif "cjonstyle.com" in url_lower:
                             site_key = "cj"
-                        elif "shinsegae.com" in url_lower:
+                        elif "shinsegae" in url_lower:
                             site_key = "shinsegae"
-                        elif "ellotte.com" in url_lower:
+                        elif "lotte" in url_lower:
                             site_key = "lotte"
                         elif "gsshop.com" in url_lower:
                             site_key = "gs"
