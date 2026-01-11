@@ -197,9 +197,12 @@ class CrawlingEngine:
 
                 # 배치 완료 후 강제 가비지 컬렉션
                 import gc
+
                 gc.collect()
 
-                self._add_log(job_id, "INFO", f"✅ 배치 {batch_num} 완료 (스레드 종료됨)")
+                self._add_log(
+                    job_id, "INFO", f"✅ 배치 {batch_num} 완료 (스레드 종료됨)"
+                )
                 # 명시적 정리는 finally 블록에서 수행
 
                 # 진행률 업데이트
@@ -256,46 +259,28 @@ class CrawlingEngine:
             "logs": [],
         }
 
-        # 스레드 로컬 크롤러 초기화 (스레드당 모든 크롤러 1개씩)
-        if not hasattr(thread_local, "crawlers_initialized"):
+        def get_crawler_for_url(url: str):
+            """URL에 따라 새 크롤러 생성 (재사용 안함)"""
             from crawlers.ssg_crawler import SSGCrawler
             from crawlers.cj_crawler import CJCrawler
             from crawlers.shinsegae_crawler import ShinsegaeCrawler
             from crawlers.lotte_crawler import LotteCrawler
             from crawlers.gs_crawler import GSCrawler
-
-            thread_local.ssg_crawler = SSGCrawler()
-            thread_local.cj_crawler = CJCrawler()
-            thread_local.shinsegae_crawler = ShinsegaeCrawler()
-            thread_local.lotte_crawler = LotteCrawler()
-            thread_local.gs_crawler = GSCrawler()
-            thread_local.crawlers_initialized = True
-
-        def get_crawler_for_url(url: str):
-            """URL에 따라 스레드 로컬 크롤러 반환"""
+            
             url_lower = url.lower()
 
             if "ssg.com" in url_lower and "shinsegaetvshopping.com" not in url_lower:
-                crawler = thread_local.ssg_crawler
-                crawler_name = "SSGCrawler"
+                return SSGCrawler()
             elif "cjonstyle.com" in url_lower:
-                crawler = thread_local.cj_crawler
-                crawler_name = "CJCrawler"
+                return CJCrawler()
             elif "shinsegaetvshopping.com" in url_lower:
-                crawler = thread_local.shinsegae_crawler
-                crawler_name = "ShinsegaeCrawler"
+                return ShinsegaeCrawler()
             elif "lotteimall.com" in url_lower:
-                crawler = thread_local.lotte_crawler
-                crawler_name = "LotteCrawler"
+                return LotteCrawler()
             elif "gsshop.com" in url_lower:
-                crawler = thread_local.gs_crawler
-                crawler_name = "GSCrawler"
+                return GSCrawler()
             else:
-                crawler = default_crawler
-                crawler_name = crawler.__class__.__name__ if crawler else "None"
-
-            result["logs"].append(("INFO", f"🔍 [{url[:60]}...] → {crawler_name}"))
-            return crawler
+                return default_crawler
 
         # 제품명을 안전하게 잘라내기 (UTF-8 보장)
         product_name = str(product.get("product_name", "Unknown"))
@@ -307,22 +292,15 @@ class CrawlingEngine:
         # Waffle 크롤링
         if product.get("waffle") and product["waffle"].get("url"):
             url = product["waffle"]["url"]
+            crawler = None
             try:
                 crawler = get_crawler_for_url(url)
                 waffle_data = crawler.crawl_price(url)
                 result["prices"].append({"seller": "waffle", **waffle_data})
                 price_info = f"{waffle_data.get('상품 가격', 'N/A')}원"
-                result["logs"].append(
-                    (
-                        "INFO",
-                        f"✓ {product_name_short} Waffle: {price_info}",
-                    )
-                )
+                result["logs"].append(("INFO", f"✓ {product_name_short} Waffle: {price_info}"))
             except Exception as e:
-                result["logs"].append(
-                    (
-                        "ERROR",
-                        f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}",
+                result["logs"].append(("ERROR", f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}"))
                     )
                 )
                 result["prices"].append({"seller": "waffle", "error": str(e)})
