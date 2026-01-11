@@ -192,6 +192,7 @@ class CrawlingEngine:
                 # 직접 정리는 불가능 (스레드 내부 변수 접근 불가)
                 # 대신 가비지 컬렉션 강제 실행
                 import gc
+
                 gc.collect()
 
                 results.extend(batch_results)
@@ -253,14 +254,20 @@ class CrawlingEngine:
             "logs": [],
         }
 
-        # 스레드 로컬 크롤러 초기화 (스레드당 1개의 SSG/CJ 크롤러만 사용)
-        if not hasattr(thread_local, "ssg_crawler"):
+        # 스레드 로컬 크롤러 초기화 (스레드당 모든 크롤러 1개씩)
+        if not hasattr(thread_local, "crawlers_initialized"):
             from crawlers.ssg_crawler import SSGCrawler
             from crawlers.cj_crawler import CJCrawler
+            from crawlers.shinsegae_crawler import ShinsegaeCrawler
+            from crawlers.lotte_crawler import LotteCrawler
+            from crawlers.gs_crawler import GSCrawler
 
             thread_local.ssg_crawler = SSGCrawler()
             thread_local.cj_crawler = CJCrawler()
-            thread_local.other_crawler = default_crawler
+            thread_local.shinsegae_crawler = ShinsegaeCrawler()
+            thread_local.lotte_crawler = LotteCrawler()
+            thread_local.gs_crawler = GSCrawler()
+            thread_local.crawlers_initialized = True
 
         def get_crawler_for_url(url: str):
             """URL에 따라 스레드 로컬 크롤러 반환"""
@@ -272,8 +279,17 @@ class CrawlingEngine:
             elif "cjonstyle.com" in url_lower:
                 crawler = thread_local.cj_crawler
                 crawler_name = "CJCrawler"
+            elif "shinsegaetvshopping.com" in url_lower:
+                crawler = thread_local.shinsegae_crawler
+                crawler_name = "ShinsegaeCrawler"
+            elif "lotteimall.com" in url_lower:
+                crawler = thread_local.lotte_crawler
+                crawler_name = "LotteCrawler"
+            elif "gsshop.com" in url_lower:
+                crawler = thread_local.gs_crawler
+                crawler_name = "GSCrawler"
             else:
-                crawler = thread_local.other_crawler
+                crawler = default_crawler
                 crawler_name = crawler.__class__.__name__ if crawler else "None"
 
             result["logs"].append(("INFO", f"🔍 [{url[:60]}...] → {crawler_name}"))
@@ -334,7 +350,17 @@ class CrawlingEngine:
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
 
-        # 제품 크롤링 완료 (스레드 로컬 크롤러는 배치 끝날 때 정리)
+        # 제품 크롤링 완료 - 모든 Chrome 즉시 정리 (메모리 절약)
+        try:
+            if hasattr(thread_local, "crawlers_initialized"):
+                thread_local.ssg_crawler._close_driver()
+                thread_local.cj_crawler._close_driver()
+                thread_local.shinsegae_crawler._close_driver()
+                thread_local.lotte_crawler._close_driver()
+                thread_local.gs_crawler._close_driver()
+        except Exception as e:
+            result["logs"].append(("WARNING", f"Chrome 정리 실패: {str(e)}"))
+
         return result
 
     def _crawl_product_safe(
