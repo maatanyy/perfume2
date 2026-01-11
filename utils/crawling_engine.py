@@ -219,10 +219,21 @@ class CrawlingEngine:
             "logs": [],  # 로그 메시지를 저장 (나중에 메인 스레드에서 DB에 추가)
         }
 
+        # 크롤러 캐시 (제품당 한 번만 생성)
+        crawler_cache = {}
+
         def get_crawler_for_url(url: str):
-            """URL에 맞는 크롤러 반환"""
-            url_crawler = get_crawler_by_url(url)
-            selected_crawler = url_crawler if url_crawler else default_crawler
+            """URL에 맞는 크롤러 반환 (캐싱)"""
+            # URL 도메인으로 캐시 키 생성
+            from urllib.parse import urlparse
+
+            domain = urlparse(url).netloc
+
+            if domain not in crawler_cache:
+                url_crawler = get_crawler_by_url(url)
+                crawler_cache[domain] = url_crawler if url_crawler else default_crawler
+
+            selected_crawler = crawler_cache[domain]
             crawler_name = selected_crawler.__class__.__name__
             result["logs"].append(
                 (
@@ -286,6 +297,13 @@ class CrawlingEngine:
                         )
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
+
+        # 사용한 크롤러 정리 (Chrome 메모리 누수 방지)
+        for crawler in crawler_cache.values():
+            try:
+                crawler._close_driver()
+            except:
+                pass
 
         return result
 
