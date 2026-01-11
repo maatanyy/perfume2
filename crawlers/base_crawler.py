@@ -12,6 +12,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import threading
+import os
+import signal
+import psutil
 
 
 class BaseCrawler(ABC):
@@ -20,6 +23,8 @@ class BaseCrawler(ABC):
     def __init__(self, use_selenium: bool = False):
         self.use_selenium = use_selenium
         self.driver = None
+        self._chrome_pids = []  # Chrome 프로세스 PID 추적
+        self._driver_lock = threading.Lock()  # 스레드 안전성
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -44,6 +49,20 @@ class BaseCrawler(ABC):
 
                 try:
                     self.driver = webdriver.Chrome(options=chrome_options)
+
+                    # Chrome 관련 PID 수집 (driver, chromedriver, chrome 프로세스)
+                    try:
+                        if self.driver.service.process:
+                            driver_pid = self.driver.service.process.pid
+                            self._chrome_pids.append(driver_pid)
+                            # 자식 프로세스도 추적
+                            parent = psutil.Process(driver_pid)
+                            for child in parent.children(recursive=True):
+                                self._chrome_pids.append(child.pid)
+                            print(f"[DEBUG] Chrome PIDs tracked: {self._chrome_pids}")
+                    except Exception as e:
+                        print(f"[DEBUG] PID tracking failed: {e}")
+
                 except Exception as e:
                     print(f"Chrome 드라이버 생성 실패: {e}")
                     self.use_selenium = False

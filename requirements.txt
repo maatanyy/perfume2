@@ -12,6 +12,7 @@ SQLAlchemy==2.0.23
 # 인증 및 보안
 bcrypt==4.1.2
 python-dotenv==1.0.0
+psutil==5.9.6
 
 # 작업 큐 (선택사항)
 Celery==5.3.4
