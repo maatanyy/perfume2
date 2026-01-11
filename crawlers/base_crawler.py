@@ -141,12 +141,34 @@ class BaseCrawler(ABC):
 
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
                 driver.get(url)
+                
+                # SSG Shopping은 더 긴 대기 시간 필요
+                url_lower = url.lower()
+                if "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower:
+                    wait_time = max(wait_time, 8)  # 최소 8초 대기
+                
                 time.sleep(wait_time)
 
-                # JavaScript 완료 대기
+                # JavaScript 완료 대기 - 여러 번 확인
                 try:
-                    driver.execute_script("return document.readyState")
-                    time.sleep(1)  # 추가 대기
+                    for _ in range(3):
+                        ready_state = driver.execute_script("return document.readyState")
+                        if ready_state == "complete":
+                            # SSG Shopping의 경우 추가로 가격 요소가 로드될 때까지 대기
+                            if "shinsegaetvshopping.com" in url_lower:
+                                try:
+                                    # 가격 요소가 로드될 때까지 최대 5초 대기
+                                    from selenium.webdriver.support.ui import WebDriverWait
+                                    from selenium.webdriver.common.by import By
+                                    from selenium.webdriver.support import expected_conditions as EC
+                                    
+                                    WebDriverWait(driver, 5).until(
+                                        lambda d: d.find_elements(By.CSS_SELECTOR, ".price--3, ._salePrice, ._bestPrice, .div-best")
+                                    )
+                                except:
+                                    pass  # 요소를 못 찾아도 계속 진행
+                            break
+                        time.sleep(1)
                 except:
                     pass
 
@@ -229,7 +251,9 @@ class BaseCrawler(ABC):
     def get_wait_time(self, url: str) -> int:
         """사이트별 대기 시간 결정"""
         url_lower = url.lower()
-        if "ssg.com" in url_lower:
+        if "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower:
+            return 10  # 신세계TV쇼핑 - JavaScript 많음, 더 긴 대기 필요
+        elif "ssg.com" in url_lower:
             return 5  # SSG 대기 시간
         elif "shinsegae" in url_lower:
             return 8  # 신세계TV쇼핑 - JavaScript 많음

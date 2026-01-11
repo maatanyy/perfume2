@@ -34,11 +34,15 @@ class Config:
     RATELIMIT_ENABLED = True
     RATELIMIT_STORAGE_URL = os.environ.get("REDIS_URL") or "memory://"
 
-    # 크롤링 설정
+    # 크롤링 설정 (4GB RAM, 2 vCPU 환경 최적화)
     MAX_CONCURRENT_JOBS_PER_USER = int(
-        os.environ.get("MAX_CONCURRENT_JOBS_PER_USER", 3)
+        os.environ.get("MAX_CONCURRENT_JOBS_PER_USER", 5)
     )
-    MAX_CONCURRENT_JOBS_SYSTEM = int(os.environ.get("MAX_CONCURRENT_JOBS_SYSTEM", 10))
+    MAX_CONCURRENT_JOBS_SYSTEM = int(os.environ.get("MAX_CONCURRENT_JOBS_SYSTEM", 5))
+    
+    # 크롤링 성능 설정
+    CRAWLING_BATCH_SIZE = int(os.environ.get("CRAWLING_BATCH_SIZE", 10))
+    CRAWLING_MAX_WORKERS = int(os.environ.get("CRAWLING_MAX_WORKERS", 2))
 
     # 구글 시트 API
     GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")

@@ -8,10 +8,10 @@ from datetime import datetime
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
-# 시스템 제한 설정
-MAX_CONCURRENT_JOBS_PER_USER = 3  # 사용자당 최대 작업 수 (메모리 최적화)
+# 시스템 제한 설정 (4GB RAM, 2 vCPU 환경 최적화)
+MAX_CONCURRENT_JOBS_PER_USER = 5  # 사용자당 최대 작업 수
 MAX_TOTAL_CONCURRENT_JOBS = (
-    4  # 전체 시스템 최대 작업 수 (4GB RAM 안정 운영 - 메모리 부족 방지)
+    5  # 전체 시스템 최대 작업 수 (3-5개 작업 동시 지원)
 )
 
 

@@ -117,8 +117,11 @@ class CrawlingEngine:
                     raise ValueError(f"{job.site_name} 사이트는 지원되지 않습니다.")
 
             results = []
-            batch_size = 5  # 배치 크기
-            max_workers = 1  # 순차 처리 (Chrome 폭발 방지)
+            # 4GB RAM, 2 vCPU 환경에 최적화된 설정
+            # 동시 작업 3-5개 지원을 위해 작업당 리소스 제한
+            from flask import current_app
+            batch_size = current_app.config.get("CRAWLING_BATCH_SIZE", 10)
+            max_workers = current_app.config.get("CRAWLING_MAX_WORKERS", 2)
 
             for i in range(0, len(products), batch_size):
                 if self.job_cancelled.get(job_id, False):
@@ -140,8 +143,8 @@ class CrawlingEngine:
                 )
                 batch_results = []
 
-                # 순차 처리 (max_workers=1)
-                executor = ThreadPoolExecutor(max_workers=1)
+                # 병렬 처리 (max_workers=2로 최적화)
+                executor = ThreadPoolExecutor(max_workers=max_workers)
                 try:
                     future_to_product = {
                         executor.submit(
@@ -189,13 +192,17 @@ class CrawlingEngine:
                     executor.shutdown(wait=True)
                     del executor
 
-                    # 배치 완료 후 크롤러 정리
-                    for cached_crawler in batch_crawler_cache.values():
+                    # 배치 완료 후 크롤러 정리 (메모리 최적화)
+                    for site_key, cached_crawler in list(batch_crawler_cache.items()):
                         try:
-                            cached_crawler._close_driver()
-                        except:
-                            pass
+                            if hasattr(cached_crawler, '_close_driver'):
+                                cached_crawler._close_driver()
+                        except Exception as e:
+                            print(f"[DEBUG] Error closing crawler {site_key}: {e}")
                     batch_crawler_cache.clear()
+                    # 명시적 메모리 정리
+                    import gc
+                    gc.collect()
 
                 results.extend(batch_results)
 
@@ -219,7 +226,7 @@ class CrawlingEngine:
                 )
 
                 if i + batch_size < len(products):
-                    time.sleep(0.2)  # 배치 간 대기 시간
+                    time.sleep(0.1)  # 배치 간 대기 시간 (최적화)
 
             # 결과 저장 (Excel 파일 생성)
             result_file = self._save_results(job_id, results, job.site_name)
@@ -266,8 +273,12 @@ class CrawlingEngine:
 
             url_lower = url.lower()
 
-            # 사이트 키 결정
-            if "ssg.com" in url_lower and "shinsegaetvshopping.com" not in url_lower:
+            # 사이트 키 결정 (SSG Shopping 우선 확인)
+            # shinsegaetvshopping.com은 SSG Shopping이므로 SSG 크롤러 사용
+            if "shinsegaetvshopping.com" in url_lower:
+                site_key = "ssg_shopping"
+                crawler_class = SSGCrawler  # SSG Shopping은 SSG 크롤러 사용
+            elif "ssg.com" in url_lower:
                 site_key = "ssg"
                 crawler_class = SSGCrawler
             elif "cjonstyle.com" in url_lower:
