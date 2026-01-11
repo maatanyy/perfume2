@@ -144,8 +144,9 @@ class CrawlingEngine:
                 )
                 batch_results = []
 
-                # 병렬 처리로 크롤링
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 매 배치마다 새 ThreadPoolExecutor 생성 → 배치 끝나면 스레드 완전 종료
+                executor = ThreadPoolExecutor(max_workers=max_workers)
+                try:
                     future_to_product = {
                         executor.submit(
                             self._crawl_product_safe,
@@ -187,16 +188,18 @@ class CrawlingEngine:
                                     "error": str(e),
                                 }
                             )
-
-                # ThreadPoolExecutor 종료 - 배치 완료
+                finally:
+                    # ThreadPoolExecutor 명시적 종료 (스레드 완전 종료 보장)
+                    executor.shutdown(wait=True)
+                    del executor
 
                 results.extend(batch_results)
 
-                # 배치 완료 후 Python GC로 스레드 로컬 정리 시도
+                # 배치 완료 후 강제 가비지 컬렉션
                 import gc
                 gc.collect()
-                
-                self._add_log(job_id, "INFO", f"배치 {batch_num} 완료, Chrome 정리 대기 중...")
+
+                self._add_log(job_id, "INFO", f"✅ 배치 {batch_num} 완료 (스레드 종료됨)")
                 # 명시적 정리는 finally 블록에서 수행
 
                 # 진행률 업데이트
