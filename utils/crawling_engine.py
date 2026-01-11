@@ -188,7 +188,12 @@ class CrawlingEngine:
                                 }
                             )
 
+                # ThreadPoolExecutor 종료 - 스레드는 재사용되므로 여기서 정리 안 함
+
                 results.extend(batch_results)
+
+                # 배치 완료 후 스레드 정리 (ThreadPoolExecutor 종료 시 자동 정리됨)
+                # 명시적 정리는 finally 블록에서 수행
 
                 # 진행률 업데이트
                 processed = min(i + batch_size, len(products))
@@ -223,7 +228,10 @@ class CrawlingEngine:
             job.fail(str(e))
             self._add_log(job_id, "ERROR", f"크롤링 실패: {str(e)}")
         finally:
-            # 스레드 정리
+            # 스레드 로컬 크롤러 정리 (메인 스레드에서 실행, 워커 스레드는 종료됨)
+            # 워커 스레드들은 ThreadPoolExecutor가 종료되면서 자동 정리
+
+            # 작업 정리
             if job_id in self.active_jobs:
                 del self.active_jobs[job_id]
             if job_id in self.job_cancelled:
@@ -238,37 +246,34 @@ class CrawlingEngine:
             "product_name": product["product_name"],
             "timestamp": datetime.now().isoformat(),
             "prices": [],
-            "logs": [],  # 로그 메시지를 저장 (나중에 메인 스레드에서 DB에 추가)
+            "logs": [],
         }
 
-        # 스레드 로컬 크롤러 캐시 초기화 (각 스레드가 독립 크롤러 보유)
-        if not hasattr(thread_local, "crawler_cache"):
-            thread_local.crawler_cache = {}
+        # 스레드 로컬 크롤러 초기화 (스레드당 1개의 SSG/CJ 크롤러만 사용)
+        if not hasattr(thread_local, "ssg_crawler"):
+            from crawlers.ssg_crawler import SSGCrawler
+            from crawlers.cj_crawler import CJCrawler
+
+            thread_local.ssg_crawler = SSGCrawler()
+            thread_local.cj_crawler = CJCrawler()
+            thread_local.other_crawler = default_crawler
 
         def get_crawler_for_url(url: str):
-            """URL에 맞는 크롤러 반환 (스레드별 독립 캐싱)"""
-            # URL 도메인으로 캐시 키 생성
-            from urllib.parse import urlparse
+            """URL에 따라 스레드 로컬 크롤러 반환"""
+            url_lower = url.lower()
 
-            domain = urlparse(url).netloc
+            if "ssg.com" in url_lower and "shinsegaetvshopping.com" not in url_lower:
+                crawler = thread_local.ssg_crawler
+                crawler_name = "SSGCrawler"
+            elif "cjonstyle.com" in url_lower:
+                crawler = thread_local.cj_crawler
+                crawler_name = "CJCrawler"
+            else:
+                crawler = thread_local.other_crawler
+                crawler_name = crawler.__class__.__name__ if crawler else "None"
 
-            # 스레드 로컬 캐시 확인 (각 스레드가 독립된 크롤러 인스턴스 사용)
-            if domain not in thread_local.crawler_cache:
-                url_crawler = get_crawler_by_url(url)
-                if url_crawler:
-                    thread_local.crawler_cache[domain] = url_crawler
-                else:
-                    thread_local.crawler_cache[domain] = default_crawler
-
-            selected_crawler = thread_local.crawler_cache[domain]
-            crawler_name = selected_crawler.__class__.__name__
-            result["logs"].append(
-                (
-                    "INFO",
-                    f"🔍 [{url[:60]}...] → {crawler_name}",
-                )
-            )
-            return selected_crawler
+            result["logs"].append(("INFO", f"🔍 [{url[:60]}...] → {crawler_name}"))
+            return crawler
 
         # 제품명을 안전하게 잘라내기 (UTF-8 보장)
         product_name = str(product.get("product_name", "Unknown"))
@@ -325,18 +330,7 @@ class CrawlingEngine:
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
 
-        # 제품 크롤링 완료 - 스레드 로컬 크롤러 정리
-        try:
-            if hasattr(thread_local, "crawler_cache"):
-                for domain_crawler in thread_local.crawler_cache.values():
-                    try:
-                        domain_crawler._close_driver()
-                    except:
-                        pass
-                thread_local.crawler_cache = {}
-        except:
-            pass
-
+        # 제품 크롤링 완료 (스레드 로컬 크롤러는 배치 끝날 때 정리)
         return result
 
     def _crawl_product_safe(
@@ -347,7 +341,18 @@ class CrawlingEngine:
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
-            return self._crawl_product(product, default_crawler, job_id, None)
+            result = self._crawl_product(product, default_crawler, job_id, None)
+            
+            # 제품 크롤링 완료 후 즉시 Chrome 정리 (메모리 절약)
+            try:
+                if hasattr(thread_local, "ssg_crawler"):
+                    thread_local.ssg_crawler._close_driver()
+                if hasattr(thread_local, "cj_crawler"):
+                    thread_local.cj_crawler._close_driver()
+            except:
+                pass
+            
+            return result
         except Exception as e:
             product_name = str(product.get("product_name", "Unknown"))
             if len(product_name) > 20:

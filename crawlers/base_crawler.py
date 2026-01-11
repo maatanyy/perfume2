@@ -144,5 +144,8 @@ class BaseCrawler(ABC):
         return 2  # 기본 대기 시간 최적화
 
     def __del__(self):
-        """소멸자 - 드라이버 정리"""
-        self._close_driver()
+        """소멸자 - 드라이버 정리 (중요!)"""
+        try:
+            self._close_driver()
+        except:
+            pass
