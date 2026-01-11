@@ -149,7 +149,6 @@ class CrawlingEngine:
                             self._crawl_product_safe,
                             product,
                             crawler,
-                            job.site_name,
                             job_id,
                             batch_crawler_cache,  # 캐시 전달
                         ): product
@@ -335,7 +334,6 @@ class CrawlingEngine:
         self,
         product: Dict,
         default_crawler,
-        site_name: str,
         job_id: int,
         crawler_cache: Dict = None,
     ) -> Dict:
