@@ -129,7 +129,7 @@ class CrawlingEngine:
                 batch = products[i : i + batch_size]
                 batch_num = (i // batch_size) + 1
                 total_batches = (len(products) + batch_size - 1) // batch_size
-                
+
                 # 배치 레벨 crawler_cache 생성 (배치 내 재사용)
                 batch_crawler_cache = {}
 
@@ -188,7 +188,7 @@ class CrawlingEngine:
                 finally:
                     executor.shutdown(wait=True)
                     del executor
-                    
+
                     # 배치 완료 후 크롤러 정리
                     for cached_crawler in batch_crawler_cache.values():
                         try:
@@ -289,9 +289,13 @@ class CrawlingEngine:
             # crawler_cache가 있으면 재사용, 없으면 새로 생성
             if crawler_cache is not None:
                 if site_key not in crawler_cache:
+                    print(f"[DEBUG] Creating NEW crawler for site: {site_key}")
                     crawler_cache[site_key] = crawler_class()
+                else:
+                    print(f"[DEBUG] REUSING crawler for site: {site_key}")
                 return crawler_cache[site_key]
             else:
+                print(f"[DEBUG] No cache, creating temporary crawler for: {site_key}")
                 return crawler_class()
 
         # 제품명을 안전하게 잘라내기 (UTF-8 보장)
