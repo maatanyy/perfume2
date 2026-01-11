@@ -289,65 +289,79 @@ class CrawlingEngine:
         else:
             product_name_short = product_name
 
-        # Waffle 크롤링
-        if product.get("waffle") and product["waffle"].get("url"):
-            url = product["waffle"]["url"]
-            crawler = None
-            try:
-                crawler = get_crawler_for_url(url)
-                waffle_data = crawler.crawl_price(url)
-                result["prices"].append({"seller": "waffle", **waffle_data})
-                price_info = f"{waffle_data.get('상품 가격', 'N/A')}원"
-                result["logs"].append(
-                    ("INFO", f"✓ {product_name_short} Waffle: {price_info}")
-                )
-            except Exception as e:
-                result["logs"].append(
-                    ("ERROR", f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}")
-                )
-                result["prices"].append({"seller": "waffle", "error": str(e)})
-            finally:
-                # Chrome 즉시 정리
-                if crawler:
-                    try:
-                        crawler._close_driver()
-                    except:
-                        pass
-
-        # 경쟁사 크롤링
-        for competitor in product.get("competitors", []):
-            if competitor.get("url"):
-                url = competitor["url"]
-                seller_name = competitor["name"]
-                crawler = None
+        # 제품별로 사용할 crawler 딕셔너리 (사이트별로 재사용)
+        site_crawlers = {}
+        
+        try:
+            # Waffle 크롤링
+            if product.get("waffle") and product["waffle"].get("url"):
+                url = product["waffle"]["url"]
                 try:
-                    crawler = get_crawler_for_url(url)
-                    comp_data = crawler.crawl_price(url)
-                    result["prices"].append({"seller": seller_name, **comp_data})
-                    price_info = f"{comp_data.get('상품 가격', 'N/A')}원"
+                    site_key = "waffle"
+                    if site_key not in site_crawlers:
+                        site_crawlers[site_key] = get_crawler_for_url(url)
+                    
+                    waffle_data = site_crawlers[site_key].crawl_price(url)
+                    result["prices"].append({"seller": "waffle", **waffle_data})
+                    price_info = f"{waffle_data.get('상품 가격', 'N/A')}원"
                     result["logs"].append(
-                        (
-                            "INFO",
-                            f"✓ {product_name_short} {seller_name}: {price_info}",
-                        )
+                        ("INFO", f"✓ {product_name_short} Waffle: {price_info}")
                     )
                 except Exception as e:
                     result["logs"].append(
-                        (
-                            "ERROR",
-                            f"✗ {product_name_short} {seller_name} 실패: {str(e)[:50]}",
-                        )
+                        ("ERROR", f"✗ {product_name_short} Waffle 실패: {str(e)[:50]}")
                     )
-                    result["prices"].append({"seller": seller_name, "error": str(e)})
-                finally:
-                    # Chrome 즉시 정리
-                    if crawler:
-                        try:
-                            crawler._close_driver()
-                        except:
-                            pass
+                    result["prices"].append({"seller": "waffle", "error": str(e)})
 
-        # 제품 크롤링 완료 (Chrome은 배치 끝날 때 정리)
+            # 경쟁사 크롤링
+            for competitor in product.get("competitors", []):
+                if competitor.get("url"):
+                    url = competitor["url"]
+                    seller_name = competitor["name"]
+                    try:
+                        # 같은 사이트면 crawler 재사용
+                        url_lower = url.lower()
+                        if "ssg.com" in url_lower:
+                            site_key = "ssg"
+                        elif "cjonstyle.com" in url_lower:
+                            site_key = "cj"
+                        elif "shinsegae.com" in url_lower:
+                            site_key = "shinsegae"
+                        elif "ellotte.com" in url_lower:
+                            site_key = "lotte"
+                        elif "gsshop.com" in url_lower:
+                            site_key = "gs"
+                        else:
+                            site_key = seller_name
+                        
+                        if site_key not in site_crawlers:
+                            site_crawlers[site_key] = get_crawler_for_url(url)
+                        
+                        comp_data = site_crawlers[site_key].crawl_price(url)
+                        result["prices"].append({"seller": seller_name, **comp_data})
+                        price_info = f"{comp_data.get('상품 가격', 'N/A')}원"
+                        result["logs"].append(
+                            (
+                                "INFO",
+                                f"✓ {product_name_short} {seller_name}: {price_info}",
+                            )
+                        )
+                    except Exception as e:
+                        result["logs"].append(
+                            (
+                                "ERROR",
+                                f"✗ {product_name_short} {seller_name} 실패: {str(e)[:50]}",
+                            )
+                        )
+                        result["prices"].append({"seller": seller_name, "error": str(e)})
+        
+        finally:
+            # 제품 크롤링 완료 - 모든 crawler 정리
+            for crawler in site_crawlers.values():
+                try:
+                    crawler._close_driver()
+                except:
+                    pass
         return result
 
     def _crawl_product_safe(
