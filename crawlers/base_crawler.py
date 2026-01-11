@@ -82,7 +82,9 @@ class BaseCrawler(ABC):
         """가격 정보 추출 (서브클래스에서 구현)"""
         pass
 
-    def crawl_price(self, url: str, max_retries: int = 2) -> Dict:
+    def crawl_price(
+        self, url: str, max_retries: int = 2, auto_close: bool = False
+    ) -> Dict:
         """가격 크롤링 (재시도 로직 포함)"""
         try:
             for attempt in range(1, max_retries + 1):
@@ -126,15 +128,16 @@ class BaseCrawler(ABC):
                 "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
         finally:
-            # 반드시 Chrome 드라이버 종료 (메모리 누수 방지)
-            self._close_driver()
+            # auto_close가 True일 때만 Chrome 종료 (호출자가 관리할 수도 있음)
+            if auto_close:
+                self._close_driver()
 
     def get_wait_time(self, url: str) -> int:
         """사이트별 대기 시간 결정"""
         url_lower = url.lower()
         if "ssg.com" in url_lower:
-            return 6  # SSG는 느리므로 더 오래 대기
-        return 2.5  # 기본 대기 시간
+            return 4  # SSG 대기 시간 최적화 (6초 → 4초)
+        return 2  # 기본 대기 시간 최적화
 
     def __del__(self):
         """소멸자 - 드라이버 정리"""

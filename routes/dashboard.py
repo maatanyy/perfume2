@@ -10,7 +10,9 @@ dashboard_bp = Blueprint("dashboard", __name__)
 
 # 시스템 제한 설정
 MAX_CONCURRENT_JOBS_PER_USER = 3  # 사용자당 최대 작업 수 (메모리 최적화)
-MAX_TOTAL_CONCURRENT_JOBS = 5  # 전체 시스템 최대 작업 수 (4GB RAM 안정 운영)
+MAX_TOTAL_CONCURRENT_JOBS = (
+    4  # 전체 시스템 최대 작업 수 (4GB RAM 안정 운영 - 메모리 부족 방지)
+)
 
 
 @dashboard_bp.route("/")

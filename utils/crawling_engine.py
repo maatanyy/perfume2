@@ -10,8 +10,11 @@ from models.crawling_log import CrawlingLog
 from crawlers.crawler_factory import get_crawler, get_crawler_by_url
 from utils.google_sheets import get_sheet_data, parse_sheet_data, extract_spreadsheet_id
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 한국 시간대 (UTC+9)
+KST = timezone(timedelta(hours=9))
 
 
 class CrawlingEngine:
@@ -113,11 +116,20 @@ class CrawlingEngine:
             results = []
             batch_size = 5  # 배치 크기 (메모리 최적화: 10 -> 5)
             max_workers = 2  # 병렬 처리 워커 수 (메모리 최적화: 3 -> 2)
+            
+            # 배치 레벨 크롤러 캐시 (제품마다 새로 만들지 않음)
+            batch_crawler_cache = {}
 
             for i in range(0, len(products), batch_size):
                 if self.job_cancelled.get(job_id, False):
                     job.cancel()
                     self._add_log(job_id, "INFO", "크롤링이 취소되었습니다.")
+                    # 캐시된 크롤러 정리
+                    for cached_crawler in batch_crawler_cache.values():
+                        try:
+                            cached_crawler._close_driver()
+                        except:
+                            pass
                     return
 
                 batch = products[i : i + batch_size]
@@ -139,6 +151,7 @@ class CrawlingEngine:
                             crawler,
                             job.site_name,
                             job_id,
+                            batch_crawler_cache,  # 캐시 전달
                         ): product
                         for product in batch
                     }
@@ -187,6 +200,13 @@ class CrawlingEngine:
                 )
 
                 if i + batch_size < len(products):
+            
+            # 모든 배치 완료 후 크롤러 정리
+            for cached_crawler in batch_crawler_cache.values():
+                try:
+                    cached_crawler._close_driver()
+                except:
+                    pass
                     time.sleep(0.2)  # 배치 간 대기 시간 단축 (0.3 -> 0.2)
 
             # 결과 저장 (Excel 파일 생성)
@@ -202,14 +222,7 @@ class CrawlingEngine:
         except Exception as e:
             job.fail(str(e))
             self._add_log(job_id, "ERROR", f"크롤링 실패: {str(e)}")
-        finally:
-            # 작업 완료 후 정리
-            if job_id in self.active_jobs:
-                del self.active_jobs[job_id]
-            if job_id in self.job_cancelled:
-                del self.job_cancelled[job_id]
-
-    def _crawl_product(self, product: Dict, default_crawler, site_name: str) -> Dict:
+        finally:, crawler_cache: Dict = None) -> Dict:
         """단일 제품 크롤링 (URL 기반 크롤러 자동 선택)"""
         result = {
             "product_id": product["product_id"],
@@ -219,14 +232,29 @@ class CrawlingEngine:
             "logs": [],  # 로그 메시지를 저장 (나중에 메인 스레드에서 DB에 추가)
         }
 
-        # 크롤러 캐시 (제품당 한 번만 생성)
-        crawler_cache = {}
+        # 크롤러 캐시 (배치 레벨에서 전달받거나 없으면 생성)
+        if crawler_cache is None:
+            crawler_cache = {}
+        
+        local_crawler_cache = {}  # 제품 내에서만 사용하는 임시 캐시
 
         def get_crawler_for_url(url: str):
-            """URL에 맞는 크롤러 반환 (캐싱)"""
+            """URL에 맞는 크롤러 반환 (배치 레벨 캐싱)"""
             # URL 도메인으로 캐시 키 생성
             from urllib.parse import urlparse
 
+            domain = urlparse(url).netloc
+
+            # 배치 레벨 캐시 확인
+            if domain not in crawler_cache:
+                url_crawler = get_crawler_by_url(url)
+                crawler_cache[domain] = url_crawler if url_crawler else default_crawler
+            
+            # 제품 내에서 재사용
+            if domain not in local_crawler_cache:
+                local_crawler_cache[domain] = crawler_cache[domain]
+
+            selected_crawler = local_
             domain = urlparse(url).netloc
 
             if domain not in crawler_cache:
@@ -290,13 +318,7 @@ class CrawlingEngine:
                         )
                     )
                 except Exception as e:
-                    result["logs"].append(
-                        (
-                            "ERROR",
-                            f"✗ {product_name_short} {seller_name} 실패: {str(e)[:50]}",
-                        )
-                    )
-                    result["prices"].append({"seller": seller_name, "error": str(e)})
+          제품 크롤링 완료 (배치 레벨에서 정리하므로 여기서는 안 함)                    result["prices"].append({"seller": seller_name, "error": str(e)})
 
         # 사용한 크롤러 정리 (Chrome 메모리 누수 방지)
         for crawler in crawler_cache.values():
@@ -314,11 +336,11 @@ class CrawlingEngine:
         try:
             return self._crawl_product(product, default_crawler, site_name)
         except Exception as e:
-            product_name = str(product.get("product_name", "Unknown"))
-            if len(product_name) > 20:
-                product_name_short = product_name[:20] + "..."
-            else:
-                product_name_short = product_name
+            product_name = str(product.get("product_name", "Unknown")), crawler_cache: Dict = None
+    ) -> Dict:
+        """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
+        try:
+            return self._crawl_product(product, default_crawler, site_name, crawler_cach
 
             return {
                 "product_id": product["product_id"],
@@ -341,8 +363,9 @@ class CrawlingEngine:
             results_dir = "results"
             os.makedirs(results_dir, exist_ok=True)
 
-            # 파일명 생성
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 파일명 생성 (한국 시간)
+            kst_now = datetime.now(KST)
+            timestamp = kst_now.strftime("%Y%m%d_%H%M%S")
             filename = f"{site_name}_가격조사_{timestamp}.xlsx"
             filepath = os.path.join(results_dir, filename)
 
