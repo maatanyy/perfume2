@@ -55,9 +55,11 @@ class BaseCrawler(ABC):
         with self._driver_lock:  # 락으로 보호
             if self.driver:
                 try:
+                    print(f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}")
                     self.driver.quit()
-                except:
-                    pass
+                    print(f"[DEBUG] Chrome driver closed successfully")
+                except Exception as e:
+                    print(f"[DEBUG] Error closing driver: {e}")
                 self.driver = None
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:

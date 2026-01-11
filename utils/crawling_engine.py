@@ -188,7 +188,11 @@ class CrawlingEngine:
                                 }
                             )
 
-                # ThreadPoolExecutor 종료 - 스레드는 재사용되므로 여기서 정리 안 함
+                # ThreadPoolExecutor 종료 후 배치의 Chrome 정리
+                # 직접 정리는 불가능 (스레드 내부 변수 접근 불가)
+                # 대신 가비지 컬렉션 강제 실행
+                import gc
+                gc.collect()
 
                 results.extend(batch_results)
 
@@ -342,7 +346,7 @@ class CrawlingEngine:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
             result = self._crawl_product(product, default_crawler, job_id, None)
-            
+
             # 제품 크롤링 완료 후 즉시 Chrome 정리 (메모리 절약)
             try:
                 if hasattr(thread_local, "ssg_crawler"):
@@ -351,7 +355,7 @@ class CrawlingEngine:
                     thread_local.cj_crawler._close_driver()
             except:
                 pass
-            
+
             return result
         except Exception as e:
             product_name = str(product.get("product_name", "Unknown"))
