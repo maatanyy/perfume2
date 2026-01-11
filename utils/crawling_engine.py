@@ -258,8 +258,6 @@ class CrawlingEngine:
         if crawler_cache is None:
             crawler_cache = {}
 
-        local_crawler_cache = {}  # 제품 내에서만 사용하는 임시 캐시
-
         def get_crawler_for_url(url: str):
             """URL에 맞는 크롤러 반환 (배치 레벨 캐싱)"""
             # URL 도메인으로 캐시 키 생성
@@ -267,16 +265,15 @@ class CrawlingEngine:
 
             domain = urlparse(url).netloc
 
-            # 배치 레벨 캐시 확인
+            # 배치 레벨 캐시 확인 (crawler_factory의 싱글톤 인스턴스 재사용)
             if domain not in crawler_cache:
                 url_crawler = get_crawler_by_url(url)
-                crawler_cache[domain] = url_crawler if url_crawler else default_crawler
+                if url_crawler:
+                    crawler_cache[domain] = url_crawler
+                else:
+                    crawler_cache[domain] = default_crawler
 
-            # 제품 내에서 재사용
-            if domain not in local_crawler_cache:
-                local_crawler_cache[domain] = crawler_cache[domain]
-
-            selected_crawler = local_crawler_cache[domain]
+            selected_crawler = crawler_cache[domain]
             crawler_name = selected_crawler.__class__.__name__
             result["logs"].append(
                 (
