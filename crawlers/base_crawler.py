@@ -58,11 +58,21 @@ class BaseCrawler(ABC):
                     print(
                         f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}"
                     )
+                    # Chrome 프로세스 강제 종료
+                    try:
+                        self.driver.service.process.terminate()  # 정상 종료 시도
+                    except:
+                        pass
+                    try:
+                        self.driver.service.process.kill()  # 강제 종료
+                    except:
+                        pass
                     self.driver.quit()
                     print(f"[DEBUG] Chrome driver closed successfully")
                 except Exception as e:
                     print(f"[DEBUG] Error closing driver: {e}")
-                self.driver = None
+                finally:
+                    self.driver = None
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
         """페이지 가져오기"""
