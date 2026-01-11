@@ -350,17 +350,7 @@ class CrawlingEngine:
                     )
                     result["prices"].append({"seller": seller_name, "error": str(e)})
 
-        # 제품 크롤링 완료 - 모든 Chrome 즉시 정리 (메모리 절약)
-        try:
-            if hasattr(thread_local, "crawlers_initialized"):
-                thread_local.ssg_crawler._close_driver()
-                thread_local.cj_crawler._close_driver()
-                thread_local.shinsegae_crawler._close_driver()
-                thread_local.lotte_crawler._close_driver()
-                thread_local.gs_crawler._close_driver()
-        except Exception as e:
-            result["logs"].append(("WARNING", f"Chrome 정리 실패: {str(e)}"))
-
+        # 제품 크롤링 완료 (Chrome은 배치 끝날 때 정리)
         return result
 
     def _crawl_product_safe(
@@ -372,6 +362,19 @@ class CrawlingEngine:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
             result = self._crawl_product(product, default_crawler, job_id, None)
+            
+            # 제품 완료 후 Chrome 정리 (스레드 로컬)
+            try:
+                if hasattr(thread_local, "crawlers_initialized"):
+                    thread_local.ssg_crawler._close_driver()
+                    thread_local.cj_crawler._close_driver()
+                    thread_local.shinsegae_crawler._close_driver()
+                    thread_local.lotte_crawler._close_driver()
+                    thread_local.gs_crawler._close_driver()
+            except:
+                pass
+            
+            return result
 
             # 제품 크롤링 완료 후 즉시 Chrome 정리 (메모리 절약)
             try:
