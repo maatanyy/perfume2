@@ -53,6 +53,15 @@ class BaseCrawler(ABC):
 
                 try:
                     self.driver = webdriver.Chrome(options=chrome_options)
+                    
+                    # 자동화 감지 방지 JavaScript 실행
+                    self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                        'source': '''
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined
+                            })
+                        '''
+                    })
 
                     # Chrome 관련 PID 수집 (driver, chromedriver, chrome 프로세스)
                     try:
