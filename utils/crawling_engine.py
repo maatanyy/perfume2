@@ -332,7 +332,12 @@ class CrawlingEngine:
         return result
 
     def _crawl_product_safe(
-        self, product: Dict, default_crawler, job_id: int, crawler_cache: Dict = None
+        self,
+        product: Dict,
+        default_crawler,
+        site_name: str,
+        job_id: int,
+        crawler_cache: Dict = None,
     ) -> Dict:
         """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
         try:
