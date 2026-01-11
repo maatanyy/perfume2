@@ -222,6 +222,18 @@ class CrawlingEngine:
             job.fail(str(e))
             self._add_log(job_id, "ERROR", f"크롤링 실패: {str(e)}")
         finally:
+            # 배치 크롤러 캐시 정리 (메모리 누수 방지 - 최우선!)
+            try:
+                for cached_crawler in batch_crawler_cache.values():
+                    try:
+                        cached_crawler._close_driver()
+                    except Exception as cleanup_error:
+                        self._add_log(
+                            job_id, "WARNING", f"크롤러 정리 실패: {str(cleanup_error)}"
+                        )
+            except:
+                pass
+
             # 스레드 정리
             if job_id in self.active_jobs:
                 del self.active_jobs[job_id]
