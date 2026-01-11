@@ -64,6 +64,9 @@ class CrawlingEngine:
         if not job:
             return
 
+        # 배치 크롤러 캐시 (try 밖에서 초기화 - finally에서 안전하게 접근하기 위함)
+        batch_crawler_cache = {}
+
         try:
             job.start()
             self._add_log(job_id, "INFO", f"크롤링 시작: {sheet_name}")
@@ -117,8 +120,7 @@ class CrawlingEngine:
             batch_size = 5  # 배치 크기 (메모리 최적화: 10 -> 5)
             max_workers = 2  # 병렬 처리 워커 수 (메모리 최적화: 3 -> 2)
 
-            # 배치 레벨 크롤러 캐시 (제품마다 새로 만들지 않음)
-            batch_crawler_cache = {}
+            # 배치 레벨 크롤러 캐시는 위에서 이미 초기화됨
 
             for i in range(0, len(products), batch_size):
                 if self.job_cancelled.get(job_id, False):
