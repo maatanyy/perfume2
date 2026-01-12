@@ -15,6 +15,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# 브라우저 세션 죽음 감지 키워드
+SESSION_DEAD_KEYWORDS = [
+    "connection refused",
+    "connection aborted",
+    "remotedisconnected",
+    "remote end closed connection",
+    "max retries exceeded",
+    "session deleted",
+    "session not created",
+    "invalid session id",
+    "no such session",
+    "session timed out",
+    "connection reset",
+    "broken pipe",
+]
+
+
+def is_browser_session_dead(error_msg: str) -> bool:
+    """브라우저 세션이 죽었는지 확인"""
+    error_lower = error_msg.lower()
+    return any(kw in error_lower for kw in SESSION_DEAD_KEYWORDS)
+
+
 @dataclass
 class BrowserStats:
     """브라우저 통계"""
@@ -37,12 +60,39 @@ class BrowserInstance:
         self.last_used_at = datetime.now()
         self.pids: list = []
         self._lock = threading.Lock()
+        self._is_dead = False  # 세션 죽음 플래그
 
     def use(self):
         """사용 기록"""
         with self._lock:
             self.request_count += 1
             self.last_used_at = datetime.now()
+
+    def mark_dead(self):
+        """세션 죽음 마킹"""
+        self._is_dead = True
+
+    @property
+    def is_dead(self) -> bool:
+        """세션이 죽었는지 확인"""
+        return self._is_dead
+
+    def is_session_alive(self) -> bool:
+        """세션이 살아있는지 확인 (간단한 health check)"""
+        if self._is_dead:
+            return False
+        try:
+            # 간단한 JavaScript 실행으로 세션 상태 확인
+            self.driver.execute_script("return 1;")
+            return True
+        except Exception as e:
+            error_msg = str(e)
+            if is_browser_session_dead(error_msg):
+                self._is_dead = True
+                logger.warning(
+                    f"브라우저 #{self.instance_id} 세션 죽음 감지: {error_msg[:50]}..."
+                )
+            return False
 
     @property
     def age_seconds(self) -> float:
@@ -234,6 +284,18 @@ class BrowserPool:
 
     def _should_recycle(self, instance: BrowserInstance) -> bool:
         """브라우저 재활용 필요 여부 판단"""
+        # 세션이 죽었으면 무조건 재활용
+        if instance.is_dead:
+            logger.warning(f"브라우저 #{instance.instance_id}: 세션 죽음 - 재활용 필요")
+            return True
+
+        # 세션 상태 확인 (health check)
+        if not instance.is_session_alive():
+            logger.warning(
+                f"브라우저 #{instance.instance_id}: 세션 응답 없음 - 재활용 필요"
+            )
+            return True
+
         # 요청 수 초과
         if instance.request_count >= self.max_requests_per_browser:
             logger.debug(
@@ -311,9 +373,16 @@ class BrowserPool:
             yield instance.driver
 
         except Exception as e:
-            logger.error(f"[BrowserPool] 브라우저 획득/사용 오류: {e}")
-            # 오류 발생 시 인스턴스 정리
+            error_msg = str(e)
+            logger.error(f"[BrowserPool] 브라우저 획득/사용 오류: {error_msg}")
+
+            # 세션 죽음 감지 시 인스턴스 마킹 및 정리
             if instance:
+                if is_browser_session_dead(error_msg):
+                    instance.mark_dead()
+                    logger.warning(
+                        f"[BrowserPool] 브라우저 #{instance.instance_id} 세션 죽음으로 폐기"
+                    )
                 self._destroy_browser(instance)
                 with self._lock:
                     self._active_browsers.pop(instance.instance_id, None)

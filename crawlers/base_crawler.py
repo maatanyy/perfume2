@@ -22,6 +22,30 @@ import threading
 import os
 import signal
 import psutil
+from selenium.common.exceptions import WebDriverException
+
+
+# 브라우저 세션 죽음 감지 키워드
+SESSION_DEAD_KEYWORDS = [
+    "connection refused",
+    "connection aborted",
+    "remotedisconnected",
+    "remote end closed connection",
+    "max retries exceeded",
+    "session deleted",
+    "session not created",
+    "invalid session id",
+    "no such session",
+    "session timed out",
+    "connection reset",
+    "broken pipe",
+]
+
+
+def is_session_dead(error_msg: str) -> bool:
+    """브라우저 세션이 죽었는지 확인"""
+    error_lower = error_msg.lower()
+    return any(kw in error_lower for kw in SESSION_DEAD_KEYWORDS)
 
 
 class SoldOutError(Exception):
@@ -44,6 +68,8 @@ class BaseCrawler(ABC):
         self.driver = None
         self._chrome_pids = []  # Chrome 프로세스 PID 추적
         self._driver_lock = threading.Lock()  # 스레드 안전성
+        self._session_dead = False  # 세션 죽음 플래그
+        self._driver_creation_attempts = 0  # 드라이버 생성 시도 횟수
         self.session = requests.Session()
         # 더 현실적인 User-Agent 및 헤더 (봇 감지 우회)
         self.session.headers.update(
@@ -67,6 +93,12 @@ class BaseCrawler(ABC):
         global UNDETECTED_AVAILABLE  # 전역 변수 사용 선언
 
         with self._driver_lock:  # 락으로 보호
+            # 세션이 죽었으면 기존 드라이버 정리 후 새로 생성
+            if self._session_dead and self.driver is not None:
+                print(f"[INFO] 죽은 세션 감지됨, 드라이버 재생성 중...")
+                self._force_close_driver_unsafe()
+                self._session_dead = False
+            
             if self.driver is None:
                 print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
 
@@ -187,45 +219,82 @@ class BaseCrawler(ABC):
     def _close_driver(self):
         """Selenium 드라이버 종료 - 모든 Chrome 프로세스 강제 종료"""
         with self._driver_lock:
-            if self.driver:
+            self._force_close_driver_unsafe()
+
+    def _force_close_driver_unsafe(self):
+        """드라이버 강제 종료 (락 없이 - 내부용)"""
+        if self.driver:
+            try:
+                print(
+                    f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}"
+                )
+
+                # 1. Selenium quit 시도
                 try:
-                    print(
-                        f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}"
-                    )
+                    self.driver.quit()
+                except:
+                    pass
 
-                    # 1. Selenium quit 시도
+                # 2. Service 프로세스 강제 종료
+                try:
+                    if hasattr(self.driver, 'service') and self.driver.service and self.driver.service.process:
+                        self.driver.service.process.terminate()
+                        time.sleep(0.5)
+                        self.driver.service.process.kill()
+                except:
+                    pass
+
+                # 3. 수집한 모든 PID 강제 종료
+                for pid in self._chrome_pids:
                     try:
-                        self.driver.quit()
+                        os.kill(pid, signal.SIGKILL)
                     except:
                         pass
 
-                    # 2. Service 프로세스 강제 종료
-                    try:
-                        if self.driver.service.process:
-                            self.driver.service.process.terminate()
-                            time.sleep(0.5)
-                            self.driver.service.process.kill()
-                    except:
-                        pass
+                self._chrome_pids.clear()
+                print(f"[DEBUG] Chrome driver closed successfully")
 
-                    # 3. 수집한 모든 PID 강제 종료
-                    for pid in self._chrome_pids:
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except:
-                            pass
+            except Exception as e:
+                print(f"[DEBUG] Error closing driver: {e}")
+            finally:
+                self.driver = None
+                self._session_dead = False
 
-                    self._chrome_pids.clear()
-                    print(f"[DEBUG] Chrome driver closed successfully")
+    def _mark_session_dead(self, error_msg: str) -> bool:
+        """세션 죽음 감지 및 마킹"""
+        if is_session_dead(error_msg):
+            print(f"[WARNING] 브라우저 세션 죽음 감지: {error_msg[:100]}...")
+            self._session_dead = True
+            return True
+        return False
 
-                except Exception as e:
-                    print(f"[DEBUG] Error closing driver: {e}")
-                finally:
-                    self.driver = None
+    def _recreate_driver_if_needed(self) -> bool:
+        """필요시 드라이버 재생성, 성공 여부 반환"""
+        if self._session_dead or self.driver is None:
+            self._close_driver()
+            self._driver_creation_attempts += 1
+            
+            if self._driver_creation_attempts > 3:
+                print(f"[ERROR] 드라이버 생성 시도 횟수 초과 (3회)")
+                return False
+            
+            driver = self._get_driver()
+            if driver is not None:
+                self._driver_creation_attempts = 0  # 성공 시 초기화
+                return True
+            return False
+        return True
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
-        """페이지 가져오기"""
+        """페이지 가져오기 (세션 죽음 감지 및 자동 복구 포함)"""
         if self.use_selenium:
+            # 세션이 죽었으면 미리 복구
+            if self._session_dead:
+                print(f"[INFO] 이전 세션 죽음 감지됨, 드라이버 재생성 중...")
+                if not self._recreate_driver_if_needed():
+                    print(f"[ERROR] 드라이버 재생성 실패")
+                    return None
+            
             try:
                 driver = self._get_driver()
                 if driver is None:
@@ -235,6 +304,22 @@ class BaseCrawler(ABC):
                     return None
 
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
+                
+                # driver.get() 호출 시 세션 죽음 감지
+                try:
+                    driver.get(url)
+                except Exception as e:
+                    error_msg = str(e)
+                    if self._mark_session_dead(error_msg):
+                        # 세션 죽음 감지 - 드라이버 재생성 후 재시도
+                        print(f"[INFO] 세션 죽음으로 인한 드라이버 재생성...")
+                        if self._recreate_driver_if_needed():
+                            driver = self.driver
+                            driver.get(url)
+                        else:
+                            return None
+                    else:
+                        raise")
                 driver.get(url)
 
                 # SSG Shopping은 더 긴 대기 시간 필요
@@ -338,6 +423,11 @@ class BaseCrawler(ABC):
                 error_msg = str(e)
                 print(f"[ERROR] Selenium으로 페이지 로드 실패: {error_msg}")
 
+                # 세션 죽음 감지 - 다음 요청 시 드라이버 재생성
+                if self._mark_session_dead(error_msg):
+                    print(f"[INFO] 세션 죽음 감지됨, 다음 요청 시 드라이버 재생성 예정")
+                    return None
+
                 # Alert 처리 (매진, 품절 등)
                 if "alert" in error_msg.lower() or "Alert" in error_msg:
                     try:
@@ -385,10 +475,16 @@ class BaseCrawler(ABC):
     def crawl_price(
         self, url: str, max_retries: int = 3, auto_close: bool = False
     ) -> Dict:
-        """가격 크롤링 (재시도 로직 포함)"""
+        """가격 크롤링 (재시도 로직 포함, 세션 죽음 자동 복구)"""
         try:
             for attempt in range(1, max_retries + 1):
                 try:
+                    # 세션이 죽었으면 드라이버 재생성
+                    if self._session_dead:
+                        print(f"[INFO] Attempt {attempt}: 세션 죽음으로 드라이버 재생성...")
+                        if not self._recreate_driver_if_needed():
+                            raise Exception("드라이버 재생성 실패")
+                    
                     wait_time = self.get_wait_time(url)
 
                     # SSG Shopping의 경우 재시도 시 더 긴 대기
@@ -402,6 +498,11 @@ class BaseCrawler(ABC):
                     html = self.fetch_page(url, wait_time)
 
                     if not html:
+                        # 세션 죽음으로 인한 실패인 경우 다음 시도에서 복구
+                        if self._session_dead and attempt < max_retries:
+                            print(f"[INFO] 세션 죽음 감지, 다음 시도에서 복구 예정...")
+                            time.sleep(2)
+                            continue
                         raise Exception("페이지를 가져올 수 없습니다.")
 
                     # HTML이 너무 짧으면 재시도
