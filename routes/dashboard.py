@@ -3,16 +3,20 @@ from flask_login import login_required, current_user
 from database import db
 from utils.decorators import approved_required
 from utils.google_sheets import get_sheet_list, extract_spreadsheet_id
-from utils.crawling_engine import crawling_engine
+
+# 개선된 크롤링 엔진 v2 사용 (브라우저 풀, 메모리 모니터링 포함)
+from utils.crawling_engine_v2 import crawling_engine_v2 as crawling_engine
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
 # 시스템 제한 설정 (4GB RAM, 2 vCPU 환경 최적화)
+# 개선된 엔진으로 동시 작업 수 증가 가능
 MAX_CONCURRENT_JOBS_PER_USER = 5  # 사용자당 최대 작업 수
-MAX_TOTAL_CONCURRENT_JOBS = (
-    5  # 전체 시스템 최대 작업 수 (3-5개 작업 동시 지원)
-)
+MAX_TOTAL_CONCURRENT_JOBS = 10  # 전체 시스템 최대 작업 수 (5~10개 동시 지원)
 
 
 @dashboard_bp.route("/")

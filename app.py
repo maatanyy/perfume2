@@ -5,6 +5,16 @@ from flask_limiter.util import get_remote_address
 from config import config
 from database import db
 import os
+import logging
+import atexit
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # 확장 초기화 (모듈 레벨에서 생성)
 login_manager = LoginManager()
@@ -68,10 +78,26 @@ def create_app(config_name=None):
             return redirect(url_for("dashboard.index"))
         return redirect(url_for("auth.login"))
 
-    # 크롤링 엔진에 앱 설정 (백그라운드 스레드에서 사용하기 위해)
+    # 크롤링 엔진 설정 (기존 엔진과 새 v2 엔진 모두 설정)
     from utils.crawling_engine import crawling_engine
 
     crawling_engine.set_app(app)
+
+    # 개선된 크롤링 엔진 v2 설정 (브라우저 풀, 메모리 모니터링 포함)
+    from utils.crawling_engine_v2 import crawling_engine_v2
+
+    crawling_engine_v2.set_app(app)
+    logger.info("✅ 크롤링 엔진 v2 초기화 완료")
+
+    # 앱 종료 시 리소스 정리
+    def cleanup():
+        logger.info("🧹 앱 종료 - 리소스 정리 중...")
+        try:
+            crawling_engine_v2.shutdown()
+        except Exception as e:
+            logger.error(f"크롤링 엔진 종료 오류: {e}")
+
+    atexit.register(cleanup)
 
     # 응답 헤더에 UTF-8 설정
     @app.after_request
@@ -93,6 +119,8 @@ if __name__ == "__main__":
         from models.crawling_log import CrawlingLog
 
         db.create_all()
-        print("✅ 데이터베이스 테이블 확인 완료")
+        logger.info("✅ 데이터베이스 테이블 확인 완료")
 
+    logger.info("🚀 서버 시작: http://localhost:5001")
+    logger.info("📊 시스템 모니터링: /api/system/status")
     app.run(debug=True, host="0.0.0.0", port=5001)

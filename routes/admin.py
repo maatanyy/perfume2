@@ -91,3 +91,11 @@ def toggle_admin(user_id):
     status = "관리자로" if user.is_admin else "일반 사용자로"
     flash(f"{user.email}을(를) {status} 변경했습니다.", "success")
     return redirect(url_for("admin.users"))
+
+
+@admin_bp.route("/monitoring")
+@login_required
+@admin_required
+def monitoring():
+    """시스템 모니터링 대시보드"""
+    return render_template("admin/monitoring.html")

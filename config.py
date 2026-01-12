@@ -38,11 +38,26 @@ class Config:
     MAX_CONCURRENT_JOBS_PER_USER = int(
         os.environ.get("MAX_CONCURRENT_JOBS_PER_USER", 5)
     )
-    MAX_CONCURRENT_JOBS_SYSTEM = int(os.environ.get("MAX_CONCURRENT_JOBS_SYSTEM", 5))
-    
+    MAX_CONCURRENT_JOBS_SYSTEM = int(os.environ.get("MAX_CONCURRENT_JOBS_SYSTEM", 10))
+
     # 크롤링 성능 설정
     CRAWLING_BATCH_SIZE = int(os.environ.get("CRAWLING_BATCH_SIZE", 10))
     CRAWLING_MAX_WORKERS = int(os.environ.get("CRAWLING_MAX_WORKERS", 2))
+
+    # 브라우저 풀 설정
+    BROWSER_POOL_MAX_BROWSERS = int(os.environ.get("BROWSER_POOL_MAX_BROWSERS", 2))
+    BROWSER_POOL_MAX_REQUESTS = int(os.environ.get("BROWSER_POOL_MAX_REQUESTS", 30))
+    BROWSER_POOL_MAX_AGE_SECONDS = int(
+        os.environ.get("BROWSER_POOL_MAX_AGE_SECONDS", 300)
+    )
+
+    # 메모리 모니터링 설정
+    MEMORY_WARNING_THRESHOLD_MB = int(
+        os.environ.get("MEMORY_WARNING_THRESHOLD_MB", 2500)
+    )
+    MEMORY_CRITICAL_THRESHOLD_MB = int(
+        os.environ.get("MEMORY_CRITICAL_THRESHOLD_MB", 3200)
+    )
 
     # 구글 시트 API
     GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
