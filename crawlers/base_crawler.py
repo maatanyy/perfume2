@@ -52,6 +52,8 @@ class BaseCrawler(ABC):
 
     def _get_driver(self):
         """Selenium 드라이버 생성 (스레드 안전) - undetected-chromedriver 우선 사용"""
+        global UNDETECTED_AVAILABLE  # 전역 변수 사용 선언
+
         with self._driver_lock:  # 락으로 보호
             if self.driver is None:
                 print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
