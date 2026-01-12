@@ -24,6 +24,18 @@ import signal
 import psutil
 
 
+class SoldOutError(Exception):
+    """매진/품절 상품 예외 - 재시도 불필요"""
+
+    pass
+
+
+class SkipRetryError(Exception):
+    """재시도 불필요 예외 (비즈니스 로직 에러)"""
+
+    pass
+
+
 class BaseCrawler(ABC):
     """크롤러 베이스 클래스"""
 
@@ -323,7 +335,38 @@ class BaseCrawler(ABC):
 
                 return html
             except Exception as e:
-                print(f"[ERROR] Selenium으로 페이지 로드 실패: {e}")
+                error_msg = str(e)
+                print(f"[ERROR] Selenium으로 페이지 로드 실패: {error_msg}")
+
+                # Alert 처리 (매진, 품절 등)
+                if "alert" in error_msg.lower() or "Alert" in error_msg:
+                    try:
+                        alert = driver.switch_to.alert
+                        alert_text = alert.text
+                        alert.accept()  # Alert 닫기
+                        print(f"[INFO] Alert 감지됨: {alert_text}")
+
+                        # 매진/품절 관련 메시지 확인
+                        skip_keywords = [
+                            "매진",
+                            "품절",
+                            "판매종료",
+                            "판매 종료",
+                            "sold out",
+                            "soldout",
+                            "재고없음",
+                            "재고 없음",
+                            "구매불가",
+                            "구매 불가",
+                        ]
+                        if any(kw in alert_text.lower() for kw in skip_keywords):
+                            # 특별한 마커를 반환하여 재시도 방지
+                            raise SoldOutError(alert_text)
+                    except SoldOutError:
+                        raise
+                    except:
+                        pass
+
                 return None
 
         try:
@@ -383,8 +426,59 @@ class BaseCrawler(ABC):
                         )
                         time.sleep(2 * attempt)
 
+                except SoldOutError as e:
+                    # 매진/품절 - 재시도 없이 즉시 반환
+                    print(f"[INFO] 매진/품절 상품 - 재시도 없이 건너뜀: {str(e)}")
+                    return {
+                        "상품 url": url,
+                        "상품 가격": None,
+                        "배송비": None,
+                        "배송비 여부": "매진/품절",
+                        "최종 가격": None,
+                        "에러 발생": f"매진/품절: {str(e)}",
+                        "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                except SkipRetryError as e:
+                    # 재시도 불필요 에러 - 즉시 반환
+                    print(f"[INFO] 재시도 불필요 에러: {str(e)}")
+                    return {
+                        "상품 url": url,
+                        "상품 가격": None,
+                        "배송비": None,
+                        "배송비 여부": "처리 불가",
+                        "최종 가격": None,
+                        "에러 발생": str(e),
+                        "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
                 except Exception as e:
-                    print(f"[ERROR] Attempt {attempt} failed: {str(e)}")
+                    error_msg = str(e)
+                    print(f"[ERROR] Attempt {attempt} failed: {error_msg}")
+
+                    # 매진/품절 관련 키워드 체크 (Alert 외 다른 방식으로 감지된 경우)
+                    skip_keywords = [
+                        "매진",
+                        "품절",
+                        "판매종료",
+                        "판매 종료",
+                        "sold out",
+                        "재고없음",
+                        "재고 없음",
+                        "구매불가",
+                        "구매 불가",
+                        "삭제된 상품",
+                        "존재하지 않는",
+                    ]
+                    if any(kw in error_msg.lower() for kw in skip_keywords):
+                        return {
+                            "상품 url": url,
+                            "상품 가격": None,
+                            "배송비": None,
+                            "배송비 여부": "매진/품절",
+                            "최종 가격": None,
+                            "에러 발생": error_msg,
+                            "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+
                     if attempt == max_retries:
                         return {
                             "상품 url": url,
@@ -392,7 +486,7 @@ class BaseCrawler(ABC):
                             "배송비": None,
                             "배송비 여부": "크롤링 실패",
                             "최종 가격": None,
-                            "에러 발생": str(e),
+                            "에러 발생": error_msg,
                             "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
                     time.sleep(2 * attempt)  # 재시도 간격 증가
