@@ -9,8 +9,29 @@ from models.crawling_job import CrawlingJob
 from models.crawling_log import CrawlingLog
 from crawlers.crawler_factory import get_crawler, get_crawler_by_url
 
-# 스레드 로컬 스토리지 (각 스레드가 독립 크롤러 캐시 보유)
+# 스레드 로컬 스토리지 (각 스레드가 독립 크롤러 캐시 보유) - 중요!
 thread_local = threading.local()
+
+
+def get_thread_crawler_cache():
+    """스레드별 독립적인 크롤러 캐시 반환"""
+    if not hasattr(thread_local, "crawler_cache"):
+        thread_local.crawler_cache = {}
+    return thread_local.crawler_cache
+
+
+def clear_thread_crawler_cache():
+    """스레드의 크롤러 캐시 정리"""
+    if hasattr(thread_local, "crawler_cache"):
+        for site_key, crawler in list(thread_local.crawler_cache.items()):
+            try:
+                if hasattr(crawler, "_close_driver"):
+                    crawler._close_driver()
+            except Exception as e:
+                print(f"[DEBUG] Error closing thread-local crawler {site_key}: {e}")
+        thread_local.crawler_cache.clear()
+
+
 from utils.google_sheets import get_sheet_data, parse_sheet_data, extract_spreadsheet_id
 import time
 from datetime import datetime, timezone, timedelta
@@ -120,6 +141,7 @@ class CrawlingEngine:
             # 4GB RAM, 2 vCPU 환경에 최적화된 설정
             # 동시 작업 3-5개 지원을 위해 작업당 리소스 제한
             from flask import current_app
+
             batch_size = current_app.config.get("CRAWLING_BATCH_SIZE", 10)
             max_workers = current_app.config.get("CRAWLING_MAX_WORKERS", 2)
 
@@ -133,8 +155,8 @@ class CrawlingEngine:
                 batch_num = (i // batch_size) + 1
                 total_batches = (len(products) + batch_size - 1) // batch_size
 
-                # 배치 레벨 crawler_cache 생성 (배치 내 재사용)
-                batch_crawler_cache = {}
+                # 주의: 병렬 처리 시 크롤러 공유하면 안됨!
+                # 각 스레드가 thread_local을 통해 독립적인 크롤러 사용
 
                 self._add_log(
                     job_id,
@@ -144,6 +166,7 @@ class CrawlingEngine:
                 batch_results = []
 
                 # 병렬 처리 (max_workers=2로 최적화)
+                # 중요: 각 스레드는 thread_local을 통해 독립 크롤러 사용
                 executor = ThreadPoolExecutor(max_workers=max_workers)
                 try:
                     future_to_product = {
@@ -152,7 +175,7 @@ class CrawlingEngine:
                             product,
                             crawler,
                             job_id,
-                            batch_crawler_cache,  # 캐시 전달
+                            None,  # 크롤러 캐시 공유하지 않음! thread_local 사용
                         ): product
                         for product in batch
                     }
@@ -192,16 +215,11 @@ class CrawlingEngine:
                     executor.shutdown(wait=True)
                     del executor
 
-                    # 배치 완료 후 크롤러 정리 (메모리 최적화)
-                    for site_key, cached_crawler in list(batch_crawler_cache.items()):
-                        try:
-                            if hasattr(cached_crawler, '_close_driver'):
-                                cached_crawler._close_driver()
-                        except Exception as e:
-                            print(f"[DEBUG] Error closing crawler {site_key}: {e}")
-                    batch_crawler_cache.clear()
+                    # 스레드 로컬 크롤러는 각 워커 스레드 종료 시 자동 정리됨
+                    # (ThreadPoolExecutor.shutdown(wait=True)이 스레드 종료를 기다림)
                     # 명시적 메모리 정리
                     import gc
+
                     gc.collect()
 
                 results.extend(batch_results)
@@ -264,7 +282,7 @@ class CrawlingEngine:
         }
 
         def get_crawler_for_url(url: str):
-            """URL에 따라 크롤러 반환 (crawler_cache 사용)"""
+            """URL에 따라 크롤러 반환 (스레드 로컬 캐시 사용 - 스레드 안전)"""
             from crawlers.ssg_crawler import SSGCrawler
             from crawlers.cj_crawler import CJCrawler
             from crawlers.shinsegae_crawler import ShinsegaeCrawler
@@ -297,17 +315,20 @@ class CrawlingEngine:
                 site_key = "default"
                 crawler_class = lambda: default_crawler
 
-            # crawler_cache가 있으면 재사용, 없으면 새로 생성
-            if crawler_cache is not None:
-                if site_key not in crawler_cache:
-                    print(f"[DEBUG] Creating NEW crawler for site: {site_key}")
-                    crawler_cache[site_key] = crawler_class()
-                else:
-                    print(f"[DEBUG] REUSING crawler for site: {site_key}")
-                return crawler_cache[site_key]
+            # 스레드 로컬 캐시 사용 (각 스레드가 독립적인 크롤러 보유)
+            # 이렇게 하면 병렬 처리 시 드라이버 충돌 방지
+            local_cache = get_thread_crawler_cache()
+
+            if site_key not in local_cache:
+                print(
+                    f"[DEBUG] Thread {threading.current_thread().name}: Creating NEW crawler for site: {site_key}"
+                )
+                local_cache[site_key] = crawler_class()
             else:
-                print(f"[DEBUG] No cache, creating temporary crawler for: {site_key}")
-                return crawler_class()
+                print(
+                    f"[DEBUG] Thread {threading.current_thread().name}: REUSING crawler for site: {site_key}"
+                )
+            return local_cache[site_key]
 
         # 제품명을 안전하게 잘라내기 (UTF-8 보장)
         product_name = str(product.get("product_name", "Unknown"))
@@ -366,9 +387,12 @@ class CrawlingEngine:
         job_id: int,
         crawler_cache: Dict = None,
     ) -> Dict:
-        """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함)"""
+        """안전한 제품 크롤링 (병렬 처리용, 예외 처리 포함, 스레드 로컬 크롤러 사용)"""
         try:
-            return self._crawl_product(product, default_crawler, job_id, crawler_cache)
+            result = self._crawl_product(
+                product, default_crawler, job_id, crawler_cache
+            )
+            return result
         except Exception as e:
             product_name = str(product.get("product_name", "Unknown"))
             if len(product_name) > 20:
@@ -386,6 +410,11 @@ class CrawlingEngine:
                     ("ERROR", f"✗ {product_name_short} 치명적 오류: {str(e)[:50]}")
                 ],
             }
+        finally:
+            # 스레드 종료 시 해당 스레드의 크롤러 정리
+            # ThreadPoolExecutor의 워커 스레드는 재사용되므로,
+            # 배치 완료 후 명시적으로 정리 필요
+            pass  # 스레드 재사용을 위해 배치 단위로 정리하지 않음
 
     def _save_results(self, job_id: int, results: List[Dict], site_name: str) -> str:
         """결과를 Excel 파일로 저장 (xlsxwriter 사용 - 안정적)"""

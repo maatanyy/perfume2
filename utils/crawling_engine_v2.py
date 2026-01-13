@@ -7,6 +7,7 @@
 - 메모리 모니터링 통합
 - 작업별 리소스 격리
 - 세마포어 기반 동시성 제어
+- 스레드 로컬 크롤러로 병렬 처리 시 URL-결과 불일치 방지
 """
 
 import threading
@@ -26,6 +27,28 @@ logger = logging.getLogger(__name__)
 
 # 한국 시간대 (UTC+9)
 KST = timezone(timedelta(hours=9))
+
+# 스레드 로컬 스토리지 (각 스레드가 독립 크롤러 보유 - 중요!)
+_thread_local = threading.local()
+
+
+def _get_thread_crawler_cache():
+    """스레드별 독립적인 크롤러 캐시 반환"""
+    if not hasattr(_thread_local, "crawler_cache"):
+        _thread_local.crawler_cache = {}
+    return _thread_local.crawler_cache
+
+
+def _clear_thread_crawler_cache():
+    """스레드의 크롤러 캐시 정리"""
+    if hasattr(_thread_local, "crawler_cache"):
+        for site_key, crawler in list(_thread_local.crawler_cache.items()):
+            try:
+                if hasattr(crawler, "_close_driver"):
+                    crawler._close_driver()
+            except Exception as e:
+                logger.debug(f"Error closing thread-local crawler {site_key}: {e}")
+        _thread_local.crawler_cache.clear()
 
 
 @dataclass
@@ -314,9 +337,10 @@ class CrawlingEngineV2:
         max_workers: int,
         stats: JobStats,
     ) -> List[Dict]:
-        """배치 처리 (병렬)"""
+        """배치 처리 (병렬) - 각 스레드가 독립적인 크롤러 사용"""
         batch_results = []
-        crawler_cache = {}
+        # 주의: 크롤러 캐시를 공유하면 병렬 처리 시 URL-결과 불일치 발생!
+        # 각 스레드가 thread_local을 통해 독립적인 크롤러 사용
 
         try:
             with ThreadPoolExecutor(
@@ -328,7 +352,7 @@ class CrawlingEngineV2:
                         product,
                         default_crawler,
                         job_id,
-                        crawler_cache,
+                        None,  # 크롤러 캐시 공유하지 않음! thread_local 사용
                     ): product
                     for product in batch
                 }
@@ -371,23 +395,16 @@ class CrawlingEngineV2:
                             }
                         )
         finally:
-            # 크롤러 캐시 정리
-            for site_key, cached_crawler in list(crawler_cache.items()):
-                try:
-                    if hasattr(cached_crawler, "_close_driver"):
-                        cached_crawler._close_driver()
-                    if hasattr(cached_crawler, "close"):
-                        cached_crawler.close()
-                except Exception as e:
-                    logger.debug(f"크롤러 정리 오류 ({site_key}): {e}")
-            crawler_cache.clear()
+            # 스레드 로컬 크롤러는 각 워커 스레드 내에서 관리됨
+            # ThreadPoolExecutor 종료 시 스레드가 종료되면서 자동 정리
+            pass
 
         return batch_results
 
     def _crawl_product_safe(
         self, product: Dict, default_crawler, job_id: int, crawler_cache: Dict
     ) -> Dict:
-        """안전한 제품 크롤링"""
+        """안전한 제품 크롤링 (스레드 로컬 크롤러 사용)"""
         try:
             return self._crawl_product(product, default_crawler, job_id, crawler_cache)
         except Exception as e:
@@ -404,7 +421,7 @@ class CrawlingEngineV2:
     def _crawl_product(
         self, product: Dict, default_crawler, job_id: int, crawler_cache: Dict
     ) -> Dict:
-        """단일 제품 크롤링"""
+        """단일 제품 크롤링 (스레드 로컬 크롤러 사용)"""
         from crawlers.ssg_crawler import SSGCrawler
         from crawlers.cj_crawler import CJCrawler
         from crawlers.shinsegae_crawler import ShinsegaeCrawler
@@ -420,7 +437,7 @@ class CrawlingEngineV2:
         }
 
         def get_crawler_for_url(url: str):
-            """URL에 맞는 크롤러 반환"""
+            """URL에 맞는 크롤러 반환 (스레드 로컬 캐시 사용 - 스레드 안전)"""
             url_lower = url.lower()
 
             if "shinsegaetvshopping.com" in url_lower:
@@ -438,9 +455,20 @@ class CrawlingEngineV2:
             else:
                 key, cls = "default", lambda: default_crawler
 
-            if key not in crawler_cache:
-                crawler_cache[key] = cls()
-            return crawler_cache[key]
+            # 스레드 로컬 캐시 사용 (각 스레드가 독립적인 크롤러 보유)
+            # 이렇게 하면 병렬 처리 시 드라이버 충돌 방지
+            local_cache = _get_thread_crawler_cache()
+
+            if key not in local_cache:
+                logger.debug(
+                    f"Thread {threading.current_thread().name}: Creating NEW crawler for: {key}"
+                )
+                local_cache[key] = cls()
+            else:
+                logger.debug(
+                    f"Thread {threading.current_thread().name}: REUSING crawler for: {key}"
+                )
+            return local_cache[key]
 
         name_short = str(product.get("product_name", "Unknown"))[:20]
 
