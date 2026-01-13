@@ -5,7 +5,7 @@ from utils.decorators import approved_required
 from utils.google_sheets import get_sheet_list, extract_spreadsheet_id
 
 # 개선된 크롤링 엔진 v2 사용 (브라우저 풀, 메모리 모니터링 포함)
-from utils.crawling_engine_v2 import crawling_engine_v2 as crawling_engine
+from utils.crawling_engine_v2 import get_crawling_engine_v2
 from datetime import datetime
 import logging
 
@@ -17,6 +17,11 @@ dashboard_bp = Blueprint("dashboard", __name__)
 # 개선된 엔진으로 동시 작업 수 증가 가능
 MAX_CONCURRENT_JOBS_PER_USER = 5  # 사용자당 최대 작업 수
 MAX_TOTAL_CONCURRENT_JOBS = 10  # 전체 시스템 최대 작업 수 (5~10개 동시 지원)
+
+
+def get_crawling_engine():
+    """크롤링 엔진 인스턴스 가져오기"""
+    return get_crawling_engine_v2()
 
 
 @dashboard_bp.route("/")
@@ -109,7 +114,7 @@ def start_crawling():
         db.session.commit()
 
         # 크롤링 시작
-        crawling_engine.start_crawling(job, FIXED_SPREADSHEET_URL, sheet_name)
+        get_crawling_engine().start_crawling(job, FIXED_SPREADSHEET_URL, sheet_name)
 
         flash("크롤링이 시작되었습니다.", "success")
         return redirect(url_for("dashboard.index"))
@@ -217,7 +222,7 @@ def cancel_job(job_id):
         flash("취소할 수 없는 작업입니다.", "error")
         return redirect(url_for("dashboard.job_detail", job_id=job_id))
 
-    crawling_engine.cancel_job(job_id)
+    get_crawling_engine().cancel_job(job_id)
     flash("작업 취소 요청이 전송되었습니다.", "info")
 
     return redirect(url_for("dashboard.job_detail", job_id=job_id))
@@ -240,7 +245,7 @@ def delete_job(job_id):
 
     # 실행 중이거나 대기 중인 작업은 자동으로 취소
     if job.status in ["running", "pending"]:
-        crawling_engine.cancel_job(job_id)
+        get_crawling_engine().cancel_job(job_id)
         job.cancel()  # 상태를 cancelled로 변경
         db.session.commit()
         # 취소가 완료될 때까지 잠시 대기

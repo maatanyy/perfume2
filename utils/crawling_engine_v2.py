@@ -736,5 +736,20 @@ class CrawlingEngineV2:
         logger.info("[CrawlingEngineV2] 종료 완료")
 
 
-# 전역 엔진 인스턴스
-crawling_engine_v2 = CrawlingEngineV2()
+# 전역 엔진 인스턴스 (lazy initialization)
+_crawling_engine_v2 = None
+_engine_lock = threading.Lock()
+
+
+def get_crawling_engine_v2() -> CrawlingEngineV2:
+    """전역 크롤링 엔진 가져오기 (싱글톤)"""
+    global _crawling_engine_v2
+
+    with _engine_lock:
+        if _crawling_engine_v2 is None:
+            _crawling_engine_v2 = CrawlingEngineV2()
+        return _crawling_engine_v2
+
+
+# 하위 호환성을 위한 alias (기존 코드에서 사용)
+crawling_engine_v2 = None  # import 시점에는 None
