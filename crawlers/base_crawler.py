@@ -319,8 +319,7 @@ class BaseCrawler(ABC):
                         else:
                             return None
                     else:
-                        raise")
-                driver.get(url)
+                        raise
 
                 # SSG Shopping은 더 긴 대기 시간 필요
                 url_lower = url.lower()
