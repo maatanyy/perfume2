@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint("dashboard", __name__)
 
 # 시스템 제한 설정 (4GB RAM, 2 vCPU 환경 최적화)
-# 개선된 엔진으로 동시 작업 수 증가 가능
-MAX_CONCURRENT_JOBS_PER_USER = 5  # 사용자당 최대 작업 수
-MAX_TOTAL_CONCURRENT_JOBS = 10  # 전체 시스템 최대 작업 수 (5~10개 동시 지원)
+# 스레드 로컬 크롤러 사용으로 작업당 메모리 증가 → 동시 작업 수 제한
+MAX_CONCURRENT_JOBS_PER_USER = 3  # 사용자당 최대 작업 수
+MAX_TOTAL_CONCURRENT_JOBS = 5  # 전체 시스템 최대 작업 수 (안전: 3, 최대: 5)
 
 
 def get_crawling_engine():
