@@ -8,6 +8,7 @@ import os
 import logging
 import atexit
 
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
