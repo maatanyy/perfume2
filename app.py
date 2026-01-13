@@ -85,16 +85,17 @@ def create_app(config_name=None):
     crawling_engine.set_app(app)
 
     # 개선된 크롤링 엔진 v2 설정 (브라우저 풀, 메모리 모니터링 포함)
-    from utils.crawling_engine_v2 import crawling_engine_v2
+    from utils.crawling_engine_v2 import get_crawling_engine_v2
 
-    crawling_engine_v2.set_app(app)
+    engine_v2 = get_crawling_engine_v2()
+    engine_v2.set_app(app)
     logger.info("✅ 크롤링 엔진 v2 초기화 완료")
 
     # 앱 종료 시 리소스 정리
     def cleanup():
         logger.info("🧹 앱 종료 - 리소스 정리 중...")
         try:
-            crawling_engine_v2.shutdown()
+            engine_v2.shutdown()
         except Exception as e:
             logger.error(f"크롤링 엔진 종료 오류: {e}")
 
