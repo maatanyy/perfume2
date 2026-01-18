@@ -4,6 +4,9 @@ from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
 from typing import Dict
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class GSCrawler(BaseCrawler):
@@ -19,6 +22,9 @@ class GSCrawler(BaseCrawler):
         product_price = None
         delivery_price = 0
         delivery_status = "무료"
+
+        logger.info(f"[GS] URL: {url[:60]}...")
+        logger.info(f"[GS] HTML 길이: {len(html)}")
 
         # 가격 선택자 (우선순위대로)
         price_selectors = [
@@ -39,10 +45,16 @@ class GSCrawler(BaseCrawler):
                 if price and price > 100:  # 100원 이상만 (할인율 제외)
                     price_elem = elem
                     product_price = price
+                    logger.info(
+                        f"[GS] ✅ 가격 발견: {product_price}원 (선택자: {selector})"
+                    )
                     break
 
             if price_elem:
                 break
+
+        if product_price is None:
+            logger.warning(f"[GS] ❌ 가격을 찾지 못함")
 
         # 배송비 추출
         delivery_selectors = [

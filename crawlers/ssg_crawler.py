@@ -4,6 +4,9 @@ from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
 from typing import Dict
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SSGCrawler(BaseCrawler):
@@ -22,8 +25,8 @@ class SSGCrawler(BaseCrawler):
         is_ssg_shopping = False
 
         # 디버깅 로그
-        print(f"[SSG DEBUG] URL: {url}")
-        print(f"[SSG DEBUG] HTML 길이: {len(html)}")
+        logger.info(f"[SSG] URL: {url[:60]}...")
+        logger.info(f"[SSG] HTML 길이: {len(html)}")
 
         # 가격 선택자 (우선순위대로)
         price_selectors = [
@@ -46,7 +49,7 @@ class SSGCrawler(BaseCrawler):
         for selector in price_selectors:
             elems = soup.select(selector)
             if elems:
-                print(f"[SSG DEBUG] 선택자 '{selector}': {len(elems)}개 발견")
+                logger.info(f"[SSG] 선택자 '{selector}': {len(elems)}개 발견")
                 # 여러 개가 있을 수 있으므로 100원 이상인 것만 선택
                 for elem in elems:
                     price_text = re.sub(r"[^\d]", "", elem.get_text())
@@ -54,8 +57,8 @@ class SSGCrawler(BaseCrawler):
 
                     if price and price > 100:  # 100원 이상만 (할인율 제외)
                         price_elem = elem
-                        print(
-                            f"[SSG DEBUG] ✅ 가격 발견: {price}원 (선택자: {selector})"
+                        logger.info(
+                            f"[SSG] ✅ 가격 발견: {price}원 (선택자: {selector})"
                         )
                         # SSG Shopping 관련 선택자인지 확인
                         if not is_ssg_shopping:
@@ -115,11 +118,11 @@ class SSGCrawler(BaseCrawler):
 
         # 최종 결과 로그
         if product_price:
-            print(
-                f"[SSG DEBUG] ✅ 최종 가격: {product_price}원, 배송비: {delivery_price}원"
+            logger.info(
+                f"[SSG] ✅ 최종 가격: {product_price}원, 배송비: {delivery_price}원"
             )
         else:
-            print(f"[SSG DEBUG] ❌ 가격을 찾지 못함")
+            logger.warning(f"[SSG] ❌ 가격을 찾지 못함")
 
         return {
             "상품 url": url,
