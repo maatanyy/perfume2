@@ -141,11 +141,13 @@ class ShinsegaeCrawler(BaseCrawler):
             html = driver.page_source
             logger.info(f"[신세계] Page loaded, HTML length: {len(html)}")
 
-            # HTML이 너무 짧으면 봇 감지 - 여러 번 재시도
+            # HTML이 너무 짧으면 봇 감지 - 즉시 내용 출력
             if len(html) < 5000:
                 logger.warning(
                     f"[신세계] HTML too short ({len(html)} bytes), 봇 차단 의심"
                 )
+                # 차단 페이지 내용 즉시 출력 (원인 파악용)
+                logger.error(f"[신세계] 차단 페이지 내용: {html}")
 
                 # 쿠키 삭제 후 재시도
                 try:
