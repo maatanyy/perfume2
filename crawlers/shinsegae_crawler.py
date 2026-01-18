@@ -6,6 +6,9 @@ from typing import Dict, Optional
 import re
 import time
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ShinsegaeCrawler(BaseCrawler):
@@ -23,14 +26,14 @@ class ShinsegaeCrawler(BaseCrawler):
         try:
             driver = self._get_driver()
             if driver is None:
-                print(f"[신세계 ERROR] Chrome driver is None")
+                logger.error("[신세계] Chrome driver is None")
                 return None
 
             # 랜덤 딜레이 추가 (봇 감지 우회)
             random_delay = random.uniform(1.0, 3.0)
             time.sleep(random_delay)
 
-            print(f"[신세계 DEBUG] Loading URL: {url[:60]}...")
+            logger.info(f"[신세계] Loading URL: {url[:60]}...")
 
             # 먼저 메인 페이지 방문 (쿠키 획득)
             try:
@@ -82,12 +85,12 @@ class ShinsegaeCrawler(BaseCrawler):
             time.sleep(3)
 
             html = driver.page_source
-            print(f"[신세계 DEBUG] Page loaded, HTML length: {len(html)}")
+            logger.info(f"[신세계] Page loaded, HTML length: {len(html)}")
 
             # HTML이 너무 짧으면 봇 감지 - 여러 번 재시도
             if len(html) < 5000:
-                print(
-                    f"[신세계 WARNING] HTML too short ({len(html)} bytes), 봇 차단 의심"
+                logger.warning(
+                    f"[신세계] HTML too short ({len(html)} bytes), 봇 차단 의심"
                 )
 
                 # 쿠키 삭제 후 재시도
@@ -99,7 +102,7 @@ class ShinsegaeCrawler(BaseCrawler):
 
                 # 새로고침 재시도
                 for retry in range(3):
-                    print(f"[신세계 DEBUG] 재시도 {retry + 1}/3...")
+                    logger.info(f"[신세계] 재시도 {retry + 1}/3...")
                     time.sleep(random.uniform(3.0, 5.0))
 
                     # 메인 페이지 다시 방문
@@ -121,20 +124,20 @@ class ShinsegaeCrawler(BaseCrawler):
                         pass
 
                     html = driver.page_source
-                    print(f"[신세계 DEBUG] 재시도 후 HTML length: {len(html)}")
+                    logger.info(f"[신세계] 재시도 후 HTML length: {len(html)}")
 
                     if len(html) >= 5000:
                         break
 
                 if len(html) < 5000:
-                    print(f"[신세계 ERROR] 봇 차단 - HTML 길이: {len(html)} bytes")
+                    logger.error(f"[신세계] 봇 차단 - HTML 길이: {len(html)} bytes")
                     # HTML 내용 일부 출력 (디버깅용)
-                    print(f"[신세계 DEBUG] HTML 미리보기: {html[:500]}")
+                    logger.debug(f"[신세계] HTML 미리보기: {html[:500]}")
 
             return html
 
         except Exception as e:
-            print(f"[신세계 ERROR] 페이지 로드 실패: {e}")
+            logger.error(f"[신세계] 페이지 로드 실패: {e}")
             return None
 
     def extract_price(self, html: str, url: str) -> Dict:
@@ -146,8 +149,8 @@ class ShinsegaeCrawler(BaseCrawler):
         delivery_status = "무료"
 
         # 디버깅 로그
-        print(f"[신세계 DEBUG] URL: {url}")
-        print(f"[신세계 DEBUG] HTML 길이: {len(html)}")
+        logger.info(f"[신세계] extract_price URL: {url[:60]}...")
+        logger.info(f"[신세계] HTML 길이: {len(html)}")
 
         # 가격 선택자 (우선순위대로) - 2026년 1월 업데이트
         price_selectors = [
@@ -163,7 +166,7 @@ class ShinsegaeCrawler(BaseCrawler):
         for selector in price_selectors:
             elems = soup.select(selector)
             if elems:
-                print(f"[신세계 DEBUG] 선택자 '{selector}': {len(elems)}개 발견")
+                logger.info(f"[신세계] 선택자 '{selector}': {len(elems)}개 발견")
 
             for elem in elems:
                 # 텍스트에서 숫자만 추출 (콤마 제거)
@@ -173,14 +176,14 @@ class ShinsegaeCrawler(BaseCrawler):
                 if price and price > 100:  # 100원 이상만 (할인율 제외)
                     price_elem = elem
                     product_price = price
-                    print(f"[신세계 DEBUG] ✅ 가격 발견: {product_price}원")
+                    logger.info(f"[신세계] ✅ 가격 발견: {product_price}원")
                     break
 
             if price_elem:
                 break
 
         if product_price is None:
-            print(f"[신세계 DEBUG] ❌ 가격을 찾지 못함")
+            logger.warning(f"[신세계] ❌ 가격을 찾지 못함")
 
         total_price = (
             (product_price + delivery_price) if product_price is not None else None
