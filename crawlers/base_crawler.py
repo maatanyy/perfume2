@@ -345,7 +345,7 @@ class BaseCrawler(ABC):
 
                 # CJ 온스타일도 JavaScript 동적 로딩으로 추가 대기 필요
                 if is_cj_onstyle:
-                    wait_time = max(wait_time, 8)  # 최소 8초 대기
+                    wait_time = max(wait_time, 5)  # 최소 8초 대기
                     try:
                         driver.execute_script(
                             "window.scrollTo(0, document.body.scrollHeight/3);"
