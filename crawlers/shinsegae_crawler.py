@@ -7,31 +7,36 @@ import re
 
 
 class ShinsegaeCrawler(BaseCrawler):
-    """신세계 쇼핑 크롤러 (JavaScript 동적 로딩으로 Selenium 권장)"""
+    """신세계 쇼핑 크롤러 - HTTP 요청으로 가능 (Selenium 불필요)"""
 
     def __init__(self):
-        super().__init__(use_selenium=True)  # 신세계는 Selenium 필요
+        # HTTP 요청으로 충분 - 가격이 HTML에 이미 포함됨
+        super().__init__(use_selenium=False)
 
     def extract_price(self, html: str, url: str) -> Dict:
-        """신세계 쇼핑 가격 정보 추출 (기존 JS 로직 참고)"""
+        """신세계 쇼핑 가격 정보 추출"""
         soup = BeautifulSoup(html, "lxml")
 
         product_price = None
         delivery_price = 0
         delivery_status = "무료"
 
-        # 가격 선택자 (우선순위대로)
+        # 가격 선택자 (우선순위대로) - 2026년 1월 업데이트
         price_selectors = [
+            "._bestPrice",  # 할인가 (우선)
+            ".price--3 ._bestPrice",
+            "._salePrice",  # 정가
             ".div-best ._bestPrice",
             ".total_price .price em",
+            ".sale_price",
         ]
 
         price_elem = None
         for selector in price_selectors:
             elems = soup.select(selector)
 
-            # 여러 개가 있을 수 있으므로 100원 이상인 것만 선택
             for elem in elems:
+                # 텍스트에서 숫자만 추출 (콤마 제거)
                 price_text = re.sub(r"[^\d]", "", elem.get_text())
                 price = int(price_text) if price_text else None
 
@@ -42,11 +47,6 @@ class ShinsegaeCrawler(BaseCrawler):
 
             if price_elem:
                 break
-
-        # 배송비는 기존 코드에서 주석 처리되어 있음 (추후 필요시 추가)
-        # delivery_selectors = [
-        #     # 신세계 쇼핑 배송비
-        # ]
 
         total_price = (
             (product_price + delivery_price) if product_price is not None else None
