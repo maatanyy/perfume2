@@ -41,3 +41,21 @@ Thumbs.db
 *.bak
 *.tmp
 
+# 결과 파
+results/*.xlsx
+results/*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# 가상환경
+per-env/
+venv/
+
+# 로그
+logs/*.log
+*.log
+
+
+results/*.csv
