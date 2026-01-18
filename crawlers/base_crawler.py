@@ -423,7 +423,7 @@ class BaseCrawler(ABC):
                                     print(f"[DEBUG] SSG Shopping 요소 대기 실패: {e}")
                                     time.sleep(3)  # 실패해도 추가 대기
 
-                            # CJ 온스타일 가격 요소 대기
+                            # CJ 온스타일 가격 요소 대기 (빠른 버전)
                             if is_cj_onstyle:
                                 try:
                                     from selenium.webdriver.support.ui import (
@@ -434,39 +434,21 @@ class BaseCrawler(ABC):
                                         expected_conditions as EC,
                                     )
 
-                                    # CJ 온스타일 가격 선택자
-                                    cj_selectors = [
-                                        ".item_price strong.ff_price",
-                                        ".ff_price",
-                                        ".price_bx",
-                                        ".opt_area .item_price",
-                                    ]
-
-                                    found = False
-                                    for selector in cj_selectors:
-                                        try:
-                                            elements = WebDriverWait(driver, 5).until(
-                                                EC.presence_of_all_elements_located(
-                                                    (By.CSS_SELECTOR, selector)
-                                                )
+                                    # CJ 온스타일 가격 선택자 - 첫 번째만 빠르게 확인
+                                    try:
+                                        elements = WebDriverWait(driver, 2).until(
+                                            EC.presence_of_element_located(
+                                                (By.CSS_SELECTOR, ".ff_price")
                                             )
-                                            if elements:
-                                                found = True
-                                                print(
-                                                    f"[DEBUG] CJ 온스타일 요소 발견: {selector}"
-                                                )
-                                                break
-                                        except:
-                                            continue
-
-                                    if not found:
-                                        print(
-                                            f"[DEBUG] CJ 온스타일 가격 요소 미발견, 추가 대기"
                                         )
-                                        time.sleep(3)
+                                        print(
+                                            f"[DEBUG] CJ 온스타일 요소 발견: .ff_price"
+                                        )
+                                    except:
+                                        pass  # 못 찾아도 진행
+
                                 except Exception as e:
                                     print(f"[DEBUG] CJ 온스타일 요소 대기 실패: {e}")
-                                    time.sleep(3)
 
                             break
                         time.sleep(1)
