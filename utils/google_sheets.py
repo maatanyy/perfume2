@@ -46,8 +46,8 @@ def get_sheet_list(
         {"sheetId": 107629138, "title": "ssg", "index": 0},
         {"sheetId": 444420257, "title": "cj", "index": 1},
         {"sheetId": 1763537417, "title": "ssg_shoping", "index": 2},
-        {"sheetId": 1137887352, "title": "롯데아이몰", "index": 3},
-        {"sheetId": 859729329, "title": "gs", "index": 4},
+        {"sheetId": 2138373054, "title": "롯데아이몰", "index": 3},
+        {"sheetId": 1292561479, "title": "gs", "index": 4},
     ]
 
     return sheets
@@ -66,8 +66,8 @@ def get_sheet_data(
             "ssg": "107629138",
             "cj": "444420257",
             "ssg_shoping": "1763537417",
-            "롯데아이몰": "1137887352",
-            "gs": "859729329",
+            "롯데아이몰": "2138373054",
+            "gs": "1292561479",
         }
 
         # sheet_title이 제공되면 매핑된 gid 사용
