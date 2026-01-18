@@ -10,6 +10,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# selenium-stealth 사용 가능 여부
+try:
+    from selenium_stealth import stealth
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
+    logger.warning("selenium-stealth not installed, using fallback")
+
 
 class ShinsegaeCrawler(BaseCrawler):
     """신세계 쇼핑 크롤러 - Selenium 사용 (강화된 봇 우회)"""
@@ -17,6 +25,41 @@ class ShinsegaeCrawler(BaseCrawler):
     def __init__(self):
         # 서버에서 HTTP 요청이 차단되어 Selenium 사용
         super().__init__(use_selenium=True)
+        self._stealth_applied = False
+
+    def _apply_stealth(self, driver):
+        """Stealth 모드 적용"""
+        if self._stealth_applied:
+            return
+            
+        if STEALTH_AVAILABLE:
+            try:
+                stealth(driver,
+                    languages=["ko-KR", "ko", "en-US", "en"],
+                    vendor="Google Inc.",
+                    platform="Win32",
+                    webgl_vendor="Intel Inc.",
+                    renderer="Intel Iris OpenGL Engine",
+                    fix_hairline=True,
+                )
+                logger.info("[신세계] selenium-stealth 적용 완료")
+                self._stealth_applied = True
+            except Exception as e:
+                logger.warning(f"[신세계] stealth 적용 실패: {e}")
+        else:
+            # stealth 없을 때 수동 우회
+            try:
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": """
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                        Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
+                        window.chrome = {runtime: {}};
+                    """
+                })
+                self._stealth_applied = True
+            except:
+                pass
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
         """신세계TV쇼핑 전용 페이지 로딩 (강화된 봇 우회)"""
@@ -29,8 +72,11 @@ class ShinsegaeCrawler(BaseCrawler):
                 logger.error("[신세계] Chrome driver is None")
                 return None
 
+            # Stealth 모드 적용
+            self._apply_stealth(driver)
+
             # 랜덤 딜레이 추가 (봇 감지 우회)
-            random_delay = random.uniform(1.0, 3.0)
+            random_delay = random.uniform(2.0, 4.0)
             time.sleep(random_delay)
 
             logger.info(f"[신세계] Loading URL: {url[:60]}...")
@@ -38,15 +84,18 @@ class ShinsegaeCrawler(BaseCrawler):
             # 먼저 메인 페이지 방문 (쿠키 획득)
             try:
                 driver.get("https://www.shinsegaetvshopping.com")
-                time.sleep(2)
-            except:
-                pass
+                time.sleep(3)
+                # 쿠키 동의 등 처리
+                driver.execute_script("window.scrollTo(0, 100);")
+                time.sleep(1)
+            except Exception as e:
+                logger.debug(f"[신세계] 메인 페이지 방문 중 오류: {e}")
 
             # 실제 상품 페이지 방문
             driver.get(url)
 
             # 초기 대기
-            time.sleep(3)
+            time.sleep(4)
 
             # 페이지 스크롤 (자연스러운 사용자 행동 시뮬레이션)
             try:
@@ -131,8 +180,8 @@ class ShinsegaeCrawler(BaseCrawler):
 
                 if len(html) < 5000:
                     logger.error(f"[신세계] 봇 차단 - HTML 길이: {len(html)} bytes")
-                    # HTML 내용 일부 출력 (디버깅용)
-                    logger.debug(f"[신세계] HTML 미리보기: {html[:500]}")
+                    # HTML 내용 일부 출력 (차단 페이지 분석용)
+                    logger.error(f"[신세계] 차단 페이지 내용: {html[:800]}")
 
             return html
 
