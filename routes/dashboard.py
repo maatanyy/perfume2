@@ -3,6 +3,7 @@ from flask_login import login_required, current_user
 from database import db
 from utils.decorators import approved_required
 from utils.google_sheets import get_sheet_list, extract_spreadsheet_id
+from app import limiter
 
 # 개선된 크롤링 엔진 v2 사용 (브라우저 풀, 메모리 모니터링 포함)
 from utils.crawling_engine_v2 import get_crawling_engine_v2
@@ -164,6 +165,7 @@ def job_detail(job_id):
 
 
 @dashboard_bp.route("/job/<int:job_id>/status")
+@limiter.exempt
 @login_required
 @approved_required
 def job_status(job_id):

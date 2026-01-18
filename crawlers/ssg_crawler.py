@@ -25,13 +25,6 @@ class SSGCrawler(BaseCrawler):
         print(f"[SSG DEBUG] URL: {url}")
         print(f"[SSG DEBUG] HTML 길이: {len(html)}")
 
-        # SSG Shopping URL 체크 (더 정확한 감지)
-        url_lower = url.lower()
-        is_ssg_shopping = (
-            "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower
-        )
-        print(f"[SSG DEBUG] SSG Shopping 여부: {is_ssg_shopping}")
-
         # 가격 선택자 (우선순위대로)
         price_selectors = [
             ".cdtl_new_price.notranslate .ssg_price",
