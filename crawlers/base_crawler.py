@@ -117,6 +117,14 @@ class BaseCrawler(ABC):
                             "--accept-lang=ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
                         )
 
+                        # 이미지/CSS/폰트 차단으로 속도 향상
+                        prefs = {
+                            "profile.managed_default_content_settings.images": 2,
+                            "profile.managed_default_content_settings.stylesheets": 2,
+                            "profile.managed_default_content_settings.fonts": 2,
+                        }
+                        options.add_experimental_option("prefs", prefs)
+
                         # undetected-chromedriver로 드라이버 생성 (자동으로 봇 감지 우회)
                         self.driver = uc.Chrome(
                             options=options, version_main=None, use_subprocess=False
@@ -166,6 +174,14 @@ class BaseCrawler(ABC):
                     chrome_options.add_experimental_option(
                         "useAutomationExtension", False
                     )
+
+                    # 이미지/CSS/폰트 차단으로 속도 향상
+                    prefs = {
+                        "profile.managed_default_content_settings.images": 2,
+                        "profile.managed_default_content_settings.stylesheets": 2,
+                        "profile.managed_default_content_settings.fonts": 2,
+                    }
+                    chrome_options.add_experimental_option("prefs", prefs)
 
                     try:
                         from selenium import webdriver
@@ -345,14 +361,13 @@ class BaseCrawler(ABC):
 
                 # CJ 온스타일도 JavaScript 동적 로딩으로 추가 대기 필요
                 if is_cj_onstyle:
-                    wait_time = max(wait_time, 5)  # 최소 8초 대기
+                    wait_time = max(wait_time, 2)  # 최소 2초 대기
                     try:
                         driver.execute_script(
                             "window.scrollTo(0, document.body.scrollHeight/3);"
                         )
-                        time.sleep(2)
-                        driver.execute_script("window.scrollTo(0, 0);")
                         time.sleep(1)
+                        driver.execute_script("window.scrollTo(0, 0);")
                     except:
                         pass
 
