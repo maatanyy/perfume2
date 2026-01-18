@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # selenium-stealth 사용 가능 여부
 try:
     from selenium_stealth import stealth
+
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
@@ -31,10 +32,11 @@ class ShinsegaeCrawler(BaseCrawler):
         """Stealth 모드 적용"""
         if self._stealth_applied:
             return
-            
+
         if STEALTH_AVAILABLE:
             try:
-                stealth(driver,
+                stealth(
+                    driver,
                     languages=["ko-KR", "ko", "en-US", "en"],
                     vendor="Google Inc.",
                     platform="Win32",
@@ -49,14 +51,17 @@ class ShinsegaeCrawler(BaseCrawler):
         else:
             # stealth 없을 때 수동 우회
             try:
-                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                    "source": """
+                driver.execute_cdp_cmd(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {
+                        "source": """
                         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                         Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
                         Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
                         window.chrome = {runtime: {}};
                     """
-                })
+                    },
+                )
                 self._stealth_applied = True
             except:
                 pass
