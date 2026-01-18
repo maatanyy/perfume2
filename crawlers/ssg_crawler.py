@@ -21,9 +21,16 @@ class SSGCrawler(BaseCrawler):
         delivery_status = "무료"
         is_ssg_shopping = False
 
+        # 디버깅 로그
+        print(f"[SSG DEBUG] URL: {url}")
+        print(f"[SSG DEBUG] HTML 길이: {len(html)}")
+
         # SSG Shopping URL 체크 (더 정확한 감지)
         url_lower = url.lower()
-        is_ssg_shopping = "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower
+        is_ssg_shopping = (
+            "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower
+        )
+        print(f"[SSG DEBUG] SSG Shopping 여부: {is_ssg_shopping}")
 
         # 가격 선택자 (우선순위대로)
         price_selectors = [
@@ -46,18 +53,27 @@ class SSGCrawler(BaseCrawler):
         for selector in price_selectors:
             elems = soup.select(selector)
             if elems:
+                print(f"[SSG DEBUG] 선택자 '{selector}': {len(elems)}개 발견")
                 # 여러 개가 있을 수 있으므로 100원 이상인 것만 선택
                 for elem in elems:
                     price_text = re.sub(r"[^\d]", "", elem.get_text())
                     price = int(price_text) if price_text else None
-                    
+
                     if price and price > 100:  # 100원 이상만 (할인율 제외)
                         price_elem = elem
+                        print(
+                            f"[SSG DEBUG] ✅ 가격 발견: {price}원 (선택자: {selector})"
+                        )
                         # SSG Shopping 관련 선택자인지 확인
                         if not is_ssg_shopping:
-                            is_ssg_shopping = ".price--3" in selector or "._salePrice" in selector or "._bestPrice" in selector or ".div-best" in selector
+                            is_ssg_shopping = (
+                                ".price--3" in selector
+                                or "._salePrice" in selector
+                                or "._bestPrice" in selector
+                                or ".div-best" in selector
+                            )
                         break
-                
+
                 if price_elem:
                     break
 
@@ -67,14 +83,14 @@ class SSGCrawler(BaseCrawler):
                 # SSG Shopping의 경우 내부 요소에서 가격 찾기
                 sale_price = price_elem.select_one("._salePrice")
                 best_price = price_elem.select_one("._bestPrice")
-                
+
                 if sale_price:
                     price_text = sale_price.get_text()
                 elif best_price:
                     price_text = best_price.get_text()
                 else:
                     price_text = price_elem.get_text()
-                
+
                 cleaned = re.sub(r"[^\d]", "", price_text)
                 product_price = int(cleaned) if cleaned and int(cleaned) > 100 else None
             else:
@@ -103,6 +119,14 @@ class SSGCrawler(BaseCrawler):
         total_price = (
             (product_price + delivery_price) if product_price is not None else None
         )
+
+        # 최종 결과 로그
+        if product_price:
+            print(
+                f"[SSG DEBUG] ✅ 최종 가격: {product_price}원, 배송비: {delivery_price}원"
+            )
+        else:
+            print(f"[SSG DEBUG] ❌ 가격을 찾지 못함")
 
         return {
             "상품 url": url,

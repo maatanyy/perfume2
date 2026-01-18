@@ -21,6 +21,10 @@ class ShinsegaeCrawler(BaseCrawler):
         delivery_price = 0
         delivery_status = "무료"
 
+        # 디버깅 로그
+        print(f"[신세계 DEBUG] URL: {url}")
+        print(f"[신세계 DEBUG] HTML 길이: {len(html)}")
+
         # 가격 선택자 (우선순위대로) - 2026년 1월 업데이트
         price_selectors = [
             "._bestPrice",  # 할인가 (우선)
@@ -34,6 +38,8 @@ class ShinsegaeCrawler(BaseCrawler):
         price_elem = None
         for selector in price_selectors:
             elems = soup.select(selector)
+            if elems:
+                print(f"[신세계 DEBUG] 선택자 '{selector}': {len(elems)}개 발견")
 
             for elem in elems:
                 # 텍스트에서 숫자만 추출 (콤마 제거)
@@ -43,10 +49,14 @@ class ShinsegaeCrawler(BaseCrawler):
                 if price and price > 100:  # 100원 이상만 (할인율 제외)
                     price_elem = elem
                     product_price = price
+                    print(f"[신세계 DEBUG] ✅ 가격 발견: {product_price}원")
                     break
 
             if price_elem:
                 break
+
+        if product_price is None:
+            print(f"[신세계 DEBUG] ❌ 가격을 찾지 못함")
 
         total_price = (
             (product_price + delivery_price) if product_price is not None else None
