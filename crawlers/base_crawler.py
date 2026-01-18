@@ -690,11 +690,11 @@ class BaseCrawler(ABC):
         if "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower:
             return 10  # 신세계TV쇼핑 - JavaScript 많음, 더 긴 대기 필요
         elif "ssg.com" in url_lower:
-            return 5  # SSG 대기 시간
+            return 3  # SSG 대기 시간
         elif "shinsegae" in url_lower:
             return 8  # 신세계TV쇼핑 - JavaScript 많음
         elif "cjonstyle" in url_lower:
-            return 5
+            return 3
         return 3  # 기본 대기 시간
 
     def __del__(self):
