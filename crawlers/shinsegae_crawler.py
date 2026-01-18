@@ -7,11 +7,11 @@ import re
 
 
 class ShinsegaeCrawler(BaseCrawler):
-    """신세계 쇼핑 크롤러 - HTTP 요청으로 가능 (Selenium 불필요)"""
+    """신세계 쇼핑 크롤러 - Selenium 사용 (HTTP 차단됨)"""
 
     def __init__(self):
-        # HTTP 요청으로 충분 - 가격이 HTML에 이미 포함됨
-        super().__init__(use_selenium=False)
+        # 서버에서 HTTP 요청이 차단되어 Selenium 사용
+        super().__init__(use_selenium=True)
 
     def extract_price(self, html: str, url: str) -> Dict:
         """신세계 쇼핑 가격 정보 추출"""
