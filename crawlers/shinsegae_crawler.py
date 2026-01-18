@@ -2,16 +2,140 @@
 
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
-from typing import Dict
+from typing import Dict, Optional
 import re
+import time
+import random
 
 
 class ShinsegaeCrawler(BaseCrawler):
-    """신세계 쇼핑 크롤러 - Selenium 사용 (HTTP 차단됨)"""
+    """신세계 쇼핑 크롤러 - Selenium 사용 (강화된 봇 우회)"""
 
     def __init__(self):
         # 서버에서 HTTP 요청이 차단되어 Selenium 사용
         super().__init__(use_selenium=True)
+
+    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        """신세계TV쇼핑 전용 페이지 로딩 (강화된 봇 우회)"""
+        if not self.use_selenium:
+            return super().fetch_page(url, wait_time)
+
+        try:
+            driver = self._get_driver()
+            if driver is None:
+                print(f"[신세계 ERROR] Chrome driver is None")
+                return None
+
+            # 랜덤 딜레이 추가 (봇 감지 우회)
+            random_delay = random.uniform(1.0, 3.0)
+            time.sleep(random_delay)
+
+            print(f"[신세계 DEBUG] Loading URL: {url[:60]}...")
+
+            # 먼저 메인 페이지 방문 (쿠키 획득)
+            try:
+                driver.get("https://www.shinsegaetvshopping.com")
+                time.sleep(2)
+            except:
+                pass
+
+            # 실제 상품 페이지 방문
+            driver.get(url)
+
+            # 초기 대기
+            time.sleep(3)
+
+            # 페이지 스크롤 (자연스러운 사용자 행동 시뮬레이션)
+            try:
+                # 천천히 스크롤
+                driver.execute_script("window.scrollTo(0, 300);")
+                time.sleep(0.5)
+                driver.execute_script("window.scrollTo(0, 600);")
+                time.sleep(0.5)
+                driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(1)
+            except:
+                pass
+
+            # 마우스 움직임 시뮬레이션
+            try:
+                from selenium.webdriver.common.action_chains import ActionChains
+
+                actions = ActionChains(driver)
+                body = driver.find_element("tag name", "body")
+                actions.move_to_element(body).perform()
+                time.sleep(0.5)
+            except:
+                pass
+
+            # JavaScript 완료 대기
+            for attempt in range(10):
+                try:
+                    ready_state = driver.execute_script("return document.readyState")
+                    if ready_state == "complete":
+                        break
+                except:
+                    pass
+                time.sleep(1)
+
+            # 추가 대기 (JavaScript 동적 로딩)
+            time.sleep(3)
+
+            html = driver.page_source
+            print(f"[신세계 DEBUG] Page loaded, HTML length: {len(html)}")
+
+            # HTML이 너무 짧으면 봇 감지 - 여러 번 재시도
+            if len(html) < 5000:
+                print(
+                    f"[신세계 WARNING] HTML too short ({len(html)} bytes), 봇 차단 의심"
+                )
+
+                # 쿠키 삭제 후 재시도
+                try:
+                    driver.delete_all_cookies()
+                    time.sleep(1)
+                except:
+                    pass
+
+                # 새로고침 재시도
+                for retry in range(3):
+                    print(f"[신세계 DEBUG] 재시도 {retry + 1}/3...")
+                    time.sleep(random.uniform(3.0, 5.0))
+
+                    # 메인 페이지 다시 방문
+                    try:
+                        driver.get("https://www.shinsegaetvshopping.com")
+                        time.sleep(2)
+                    except:
+                        pass
+
+                    driver.get(url)
+                    time.sleep(5)
+
+                    # 스크롤
+                    try:
+                        driver.execute_script("window.scrollTo(0, 500);")
+                        time.sleep(1)
+                        driver.execute_script("window.scrollTo(0, 0);")
+                    except:
+                        pass
+
+                    html = driver.page_source
+                    print(f"[신세계 DEBUG] 재시도 후 HTML length: {len(html)}")
+
+                    if len(html) >= 5000:
+                        break
+
+                if len(html) < 5000:
+                    print(f"[신세계 ERROR] 봇 차단 - HTML 길이: {len(html)} bytes")
+                    # HTML 내용 일부 출력 (디버깅용)
+                    print(f"[신세계 DEBUG] HTML 미리보기: {html[:500]}")
+
+            return html
+
+        except Exception as e:
+            print(f"[신세계 ERROR] 페이지 로드 실패: {e}")
+            return None
 
     def extract_price(self, html: str, url: str) -> Dict:
         """신세계 쇼핑 가격 정보 추출"""
