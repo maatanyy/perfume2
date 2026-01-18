@@ -98,7 +98,7 @@ class BaseCrawler(ABC):
                 print(f"[INFO] 죽은 세션 감지됨, 드라이버 재생성 중...")
                 self._force_close_driver_unsafe()
                 self._session_dead = False
-            
+
             if self.driver is None:
                 print(f"[DEBUG] Creating Chrome driver for {self.__class__.__name__}")
 
@@ -225,9 +225,7 @@ class BaseCrawler(ABC):
         """드라이버 강제 종료 (락 없이 - 내부용)"""
         if self.driver:
             try:
-                print(
-                    f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}"
-                )
+                print(f"[DEBUG] Closing Chrome driver for {self.__class__.__name__}")
 
                 # 1. Selenium quit 시도
                 try:
@@ -237,7 +235,11 @@ class BaseCrawler(ABC):
 
                 # 2. Service 프로세스 강제 종료
                 try:
-                    if hasattr(self.driver, 'service') and self.driver.service and self.driver.service.process:
+                    if (
+                        hasattr(self.driver, "service")
+                        and self.driver.service
+                        and self.driver.service.process
+                    ):
                         self.driver.service.process.terminate()
                         time.sleep(0.5)
                         self.driver.service.process.kill()
@@ -273,11 +275,11 @@ class BaseCrawler(ABC):
         if self._session_dead or self.driver is None:
             self._close_driver()
             self._driver_creation_attempts += 1
-            
+
             if self._driver_creation_attempts > 3:
                 print(f"[ERROR] 드라이버 생성 시도 횟수 초과 (3회)")
                 return False
-            
+
             driver = self._get_driver()
             if driver is not None:
                 self._driver_creation_attempts = 0  # 성공 시 초기화
@@ -294,7 +296,7 @@ class BaseCrawler(ABC):
                 if not self._recreate_driver_if_needed():
                     print(f"[ERROR] 드라이버 재생성 실패")
                     return None
-            
+
             try:
                 driver = self._get_driver()
                 if driver is None:
@@ -304,7 +306,7 @@ class BaseCrawler(ABC):
                     return None
 
                 print(f"[DEBUG] Loading URL: {url[:50]}...")
-                
+
                 # driver.get() 호출 시 세션 죽음 감지
                 try:
                     driver.get(url)
@@ -326,10 +328,24 @@ class BaseCrawler(ABC):
                 is_ssg_shopping = (
                     "shinsegaetvshopping.com" in url_lower or "ssg_shoping" in url_lower
                 )
+                is_cj_onstyle = "cjonstyle.com" in url_lower
 
                 if is_ssg_shopping:
                     wait_time = max(wait_time, 10)  # 최소 10초 대기
                     # 추가로 페이지 스크롤 (동적 콘텐츠 로딩 유도)
+                    try:
+                        driver.execute_script(
+                            "window.scrollTo(0, document.body.scrollHeight/3);"
+                        )
+                        time.sleep(2)
+                        driver.execute_script("window.scrollTo(0, 0);")
+                        time.sleep(1)
+                    except:
+                        pass
+
+                # CJ 온스타일도 JavaScript 동적 로딩으로 추가 대기 필요
+                if is_cj_onstyle:
+                    wait_time = max(wait_time, 8)  # 최소 8초 대기
                     try:
                         driver.execute_script(
                             "window.scrollTo(0, document.body.scrollHeight/3);"
@@ -391,6 +407,52 @@ class BaseCrawler(ABC):
                                 except Exception as e:
                                     print(f"[DEBUG] SSG Shopping 요소 대기 실패: {e}")
                                     time.sleep(3)  # 실패해도 추가 대기
+
+                            # CJ 온스타일 가격 요소 대기
+                            if is_cj_onstyle:
+                                try:
+                                    from selenium.webdriver.support.ui import (
+                                        WebDriverWait,
+                                    )
+                                    from selenium.webdriver.common.by import By
+                                    from selenium.webdriver.support import (
+                                        expected_conditions as EC,
+                                    )
+
+                                    # CJ 온스타일 가격 선택자
+                                    cj_selectors = [
+                                        ".item_price strong.ff_price",
+                                        ".ff_price",
+                                        ".price_bx",
+                                        ".opt_area .item_price",
+                                    ]
+
+                                    found = False
+                                    for selector in cj_selectors:
+                                        try:
+                                            elements = WebDriverWait(driver, 5).until(
+                                                EC.presence_of_all_elements_located(
+                                                    (By.CSS_SELECTOR, selector)
+                                                )
+                                            )
+                                            if elements:
+                                                found = True
+                                                print(
+                                                    f"[DEBUG] CJ 온스타일 요소 발견: {selector}"
+                                                )
+                                                break
+                                        except:
+                                            continue
+
+                                    if not found:
+                                        print(
+                                            f"[DEBUG] CJ 온스타일 가격 요소 미발견, 추가 대기"
+                                        )
+                                        time.sleep(3)
+                                except Exception as e:
+                                    print(f"[DEBUG] CJ 온스타일 요소 대기 실패: {e}")
+                                    time.sleep(3)
+
                             break
                         time.sleep(1)
                 except Exception as e:
@@ -480,10 +542,12 @@ class BaseCrawler(ABC):
                 try:
                     # 세션이 죽었으면 드라이버 재생성
                     if self._session_dead:
-                        print(f"[INFO] Attempt {attempt}: 세션 죽음으로 드라이버 재생성...")
+                        print(
+                            f"[INFO] Attempt {attempt}: 세션 죽음으로 드라이버 재생성..."
+                        )
                         if not self._recreate_driver_if_needed():
                             raise Exception("드라이버 재생성 실패")
-                    
+
                     wait_time = self.get_wait_time(url)
 
                     # SSG Shopping의 경우 재시도 시 더 긴 대기

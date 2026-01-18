@@ -20,11 +20,17 @@ class CJCrawler(BaseCrawler):
         delivery_price = 0
         delivery_status = "무료"
 
-        # 가격 선택자 (우선순위대로)
+        # 가격 선택자 (우선순위대로) - 2026년 1월 CJ 온스타일 구조에 맞게 업데이트
         price_selectors = [
+            # 최신 CJ 온스타일 선택자
+            ".item_price strong.ff_price",
+            ".opt_area .item_price strong.ff_price",
+            ".price_bx .txt_price .ff_price",
+            ".txt_price .ff_price",
+            ".total_price_wrap strong.ff_price",
+            # 기존 선택자 (백업)
             ".price_area .price_txt > strong.ff_price",
             ".price_area span:not(.txt_sale):not(.txt_del) > strong.ff_price",
-            ".opt_area .item_price strong.ff_price",
         ]
 
         price_elem = None
