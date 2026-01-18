@@ -440,8 +440,9 @@ class CrawlingEngineV2:
             """URL에 맞는 크롤러 반환 (스레드 로컬 캐시 사용 - 스레드 안전)"""
             url_lower = url.lower()
 
+            # 신세계TV쇼핑은 ShinsegaeCrawler 사용 (SSG.com과 다름!)
             if "shinsegaetvshopping.com" in url_lower:
-                key, cls = "ssg_shopping", SSGCrawler
+                key, cls = "shinsegae_tv", ShinsegaeCrawler
             elif "ssg.com" in url_lower:
                 key, cls = "ssg", SSGCrawler
             elif "cjonstyle.com" in url_lower:

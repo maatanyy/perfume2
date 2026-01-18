@@ -291,11 +291,11 @@ class CrawlingEngine:
 
             url_lower = url.lower()
 
-            # 사이트 키 결정 (SSG Shopping 우선 확인)
-            # shinsegaetvshopping.com은 SSG Shopping이므로 SSG 크롤러 사용
+            # 사이트 키 결정
+            # 신세계TV쇼핑은 SSG.com과 다르므로 ShinsegaeCrawler 사용!
             if "shinsegaetvshopping.com" in url_lower:
-                site_key = "ssg_shopping"
-                crawler_class = SSGCrawler  # SSG Shopping은 SSG 크롤러 사용
+                site_key = "shinsegae_tv"
+                crawler_class = ShinsegaeCrawler  # 신세계TV쇼핑 전용 크롤러
             elif "ssg.com" in url_lower:
                 site_key = "ssg"
                 crawler_class = SSGCrawler
