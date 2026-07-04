@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block title %}시스템 모니터링{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <h2 class="mb-4">📊 시스템 모니터링</h2>
+    
+    <!-- 요약 카드 -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h6 class="card-title">활성 작업</h6>
+                    <h2 id="active-jobs">-</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card" id="memory-card">
+                <div class="card-body">
+                    <h6 class="card-title">메모리 사용량</h6>
+                    <h2><span id="memory-usage">-</span> MB</h2>
+                    <small id="memory-status" class="text-muted">상태: -</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="card-title">브라우저 풀</h6>
+                    <h2><span id="browser-active">-</span> / <span id="browser-max">-</span></h2>
+                    <small class="text-muted">활성 / 최대</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="card-title">시스템 가용 메모리</h6>
+                    <h2><span id="available-memory">-</span> MB</h2>
+                    <small class="text-muted">사용 가능</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 상세 정보 -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>메모리 상세</span>
+                    <button class="btn btn-sm btn-warning" onclick="forceGC()">🗑️ GC 실행</button>
+                </div>
+                <div class="card-body">
+                    <table class="table table-sm">
+                        <tr>
+                            <td>현재 RSS</td>
+                            <td id="detail-rss">- MB</td>
+                        </tr>
+                        <tr>
+                            <td>피크 RSS</td>
+                            <td id="detail-peak">- MB</td>
+                        </tr>
+                        <tr>
+                            <td>경고 횟수</td>
+                            <td id="detail-warnings">-</td>
+                        </tr>
+                        <tr>
+                            <td>위험 횟수</td>
+                            <td id="detail-criticals">-</td>
+                        </tr>
+                        <tr>
+                            <td>GC 실행 횟수</td>
+                            <td id="detail-gc">-</td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>브라우저 풀 상세</span>
+                    <button class="btn btn-sm btn-danger" onclick="resetBrowserPool()">🔄 풀 리셋</button>
+                </div>
+                <div class="card-body">
+                    <table class="table table-sm">
+                        <tr>
+                            <td>총 생성 수</td>
+                            <td id="browser-created">-</td>
+                        </tr>
+                        <tr>
+                            <td>총 요청 수</td>
+                            <td id="browser-requests">-</td>
+                        </tr>
+                        <tr>
+                            <td>현재 활성</td>
+                            <td id="browser-current">-</td>
+                        </tr>
+                        <tr>
+                            <td>풀 대기 중</td>
+                            <td id="browser-pool-size">-</td>
+                        </tr>
+                        <tr>
+                            <td>재활용 횟수</td>
+                            <td id="browser-recycled">-</td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 활성 작업 목록 -->
+    <div class="card">
+        <div class="card-header">활성 작업 목록</div>
+        <div class="card-body">
+            <table class="table table-hover" id="active-jobs-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>사이트</th>
+                        <th>진행률</th>
+                        <th>상태</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-tbody">
+                    <tr><td colspan="4" class="text-center">로딩 중...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+// 5초마다 상태 업데이트
+setInterval(updateStatus, 5000);
+updateStatus();
+
+function updateStatus() {
+    // 시스템 상태
+    fetch('/api/system/status')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('active-jobs').textContent = data.active_jobs || 0;
+            
+            // 활성 작업 테이블 업데이트
+            const tbody = document.getElementById('jobs-tbody');
+            if (data.job_ids && data.job_ids.length > 0) {
+                tbody.innerHTML = data.job_ids.map(id => 
+                    `<tr><td>${id}</td><td>-</td><td>-</td><td>실행 중</td></tr>`
+                ).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">활성 작업 없음</td></tr>';
+            }
+        })
+        .catch(e => console.error('상태 조회 실패:', e));
+    
+    // 메모리 상태
+    fetch('/api/system/memory')
+        .then(r => r.json())
+        .then(data => {
+            const current = data.current || {};
+            const stats = data.stats || {};
+            
+            document.getElementById('memory-usage').textContent = current.rss_mb || '-';
+            document.getElementById('memory-status').textContent = '상태: ' + (current.status || '-');
+            document.getElementById('available-memory').textContent = current.available_mb || '-';
+            
+            // 카드 색상 변경
+            const card = document.getElementById('memory-card');
+            card.classList.remove('bg-warning', 'bg-danger', 'text-white');
+            if (current.status === 'critical') {
+                card.classList.add('bg-danger', 'text-white');
+            } else if (current.status === 'warning') {
+                card.classList.add('bg-warning');
+            }
+            
+            // 상세 정보
+            document.getElementById('detail-rss').textContent = (current.rss_mb || '-') + ' MB';
+            document.getElementById('detail-peak').textContent = (stats.peak_rss_mb || '-') + ' MB';
+            document.getElementById('detail-warnings').textContent = stats.warning_count || 0;
+            document.getElementById('detail-criticals').textContent = stats.critical_count || 0;
+            document.getElementById('detail-gc').textContent = stats.gc_count || 0;
+        })
+        .catch(e => console.error('메모리 조회 실패:', e));
+    
+    // 브라우저 풀 상태
+    fetch('/api/system/browser-pool')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('browser-active').textContent = data.current_active || 0;
+            document.getElementById('browser-max').textContent = data.max_browsers || '-';
+            
+            document.getElementById('browser-created').textContent = data.total_created || 0;
+            document.getElementById('browser-requests').textContent = data.total_requests || 0;
+            document.getElementById('browser-current').textContent = data.current_active || 0;
+            document.getElementById('browser-pool-size').textContent = data.pool_size || 0;
+            document.getElementById('browser-recycled').textContent = data.recycled_count || 0;
+        })
+        .catch(e => console.error('브라우저 풀 조회 실패:', e));
+}
+
+function forceGC() {
+    if (!confirm('가비지 컬렉션을 실행하시겠습니까?')) return;
+    
+    fetch('/api/system/memory/gc', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`GC 완료! ${data.freed_mb}MB 해제됨`);
+                updateStatus();
+            } else {
+                alert('오류: ' + data.error);
+            }
+        })
+        .catch(e => alert('오류: ' + e));
+}
+
+function resetBrowserPool() {
+    if (!confirm('브라우저 풀을 리셋하시겠습니까? 현재 진행 중인 크롤링에 영향을 줄 수 있습니다.')) return;
+    
+    fetch('/api/system/browser-pool/reset', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert('브라우저 풀이 리셋되었습니다.');
+                updateStatus();
+            } else {
+                alert('오류: ' + data.error);
+            }
+        })
+        .catch(e => alert('오류: ' + e));
+}
+</script>
+{% endblock %}

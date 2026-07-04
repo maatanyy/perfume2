@@ -1,0 +1,119 @@
+{
+    "_comment": "사이트별 크롤링 설정 - JS 렌더링 필요 여부, 대기 시간 등",
+    
+    "sites": {
+        "ssg.com": {
+            "name": "SSG.COM",
+            "requires_javascript": true,
+            "wait_time": 5,
+            "retry_count": 3,
+            "timeout": 30,
+            "selectors": {
+                "price": [
+                    ".cdtl_new_price.notranslate .ssg_price",
+                    ".cdtl_price .ssg_price",
+                    ".price_total .ssg_price",
+                    "em.ssg_price"
+                ],
+                "delivery": [
+                    ".cdtl_dl.cdtl_delivery_fee li em.ssg_price",
+                    ".delivery_fee .ssg_price"
+                ]
+            },
+            "notes": "JavaScript 렌더링 필수, 동적 가격 로딩"
+        },
+        
+        "shinsegaetvshopping.com": {
+            "name": "신세계TV쇼핑 (SSG Shopping)",
+            "requires_javascript": true,
+            "wait_time": 10,
+            "retry_count": 3,
+            "timeout": 40,
+            "selectors": {
+                "price": [
+                    ".price--3",
+                    "._salePrice",
+                    "._bestPrice",
+                    ".div-best ._bestPrice"
+                ],
+                "delivery": []
+            },
+            "notes": "JavaScript 렌더링 필수, 느린 로딩, 긴 대기 시간 필요"
+        },
+        
+        "cjonstyle.com": {
+            "name": "CJ온스타일",
+            "requires_javascript": true,
+            "wait_time": 5,
+            "retry_count": 3,
+            "timeout": 30,
+            "selectors": {
+                "price": [
+                    ".prd-price .price em",
+                    ".final-price em",
+                    ".sale_price em"
+                ],
+                "delivery": [
+                    ".delivery-info .price"
+                ]
+            },
+            "notes": "JavaScript 렌더링 필수"
+        },
+        
+        "lotteimall.com": {
+            "name": "롯데아이몰",
+            "requires_javascript": true,
+            "wait_time": 5,
+            "retry_count": 3,
+            "timeout": 30,
+            "selectors": {
+                "price": [
+                    ".prd_price .price",
+                    ".sale_prc",
+                    ".real_prc"
+                ],
+                "delivery": [
+                    ".dlv_info .price"
+                ]
+            },
+            "notes": "JavaScript 렌더링 필수"
+        },
+        
+        "gsshop.com": {
+            "name": "GS샵",
+            "requires_javascript": false,
+            "wait_time": 2,
+            "retry_count": 3,
+            "timeout": 20,
+            "selectors": {
+                "price": [
+                    ".price-area .price em",
+                    ".prd-price em"
+                ],
+                "delivery": [
+                    ".delivery-fee"
+                ]
+            },
+            "notes": "HTTP 요청으로 크롤링 가능할 수 있음"
+        }
+    },
+    
+    "defaults": {
+        "requires_javascript": true,
+        "wait_time": 3,
+        "retry_count": 3,
+        "timeout": 30
+    },
+    
+    "performance": {
+        "_comment": "4GB RAM, 2 vCPU 환경 최적화 설정",
+        "max_concurrent_http_requests": 10,
+        "max_concurrent_browser_requests": 2,
+        "batch_size": 10,
+        "batch_delay_seconds": 0.5,
+        "browser_recycle_after_requests": 30,
+        "browser_max_age_seconds": 300,
+        "memory_warning_threshold_mb": 2500,
+        "memory_critical_threshold_mb": 3200
+    }
+}

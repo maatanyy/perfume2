@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+
+{% block title %}가격 비교 크롤링{% endblock %}
+
+{% block extra_css %}
+<style>
+.site-card {
+    border: 1px solid #dee2e6;
+    border-radius: 12px;
+    padding: 20px;
+    height: 100%;
+    transition: box-shadow 0.2s;
+}
+.site-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+.site-card.running { border-color: #0d6efd; background: #f0f5ff; }
+.site-card.completed { border-color: #198754; background: #f0fff4; }
+.site-card.failed { border-color: #dc3545; background: #fff5f5; }
+.site-card.pending { border-color: #ffc107; background: #fffdf0; }
+
+.progress-section { margin-top: 12px; }
+.progress { height: 10px; border-radius: 5px; }
+.status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.badge-running { background: #e0ebff; color: #0d6efd; }
+.badge-completed { background: #d4f0e0; color: #198754; }
+.badge-failed { background: #ffe0e0; color: #dc3545; }
+.badge-pending { background: #fff3cd; color: #856404; }
+.badge-idle { background: #f0f0f0; color: #666; }
+
+.eta-text { font-size: 12px; color: #666; margin-top: 4px; }
+.last-item-text { font-size: 11px; color: #888; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-url-input { font-size: 13px; }
+.site-icon { font-size: 24px; }
+.all-run-btn { background: #0d6efd; border: none; padding: 10px 28px; border-radius: 8px; color: white; font-weight: 600; }
+.all-run-btn:hover { background: #0b5ed7; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0">가격 비교 크롤링 대시보드</h4>
+    <a href="{{ url_for('dashboard.history') }}" class="btn btn-outline-secondary btn-sm">작업 히스토리</a>
+</div>
+
+<!-- 구글 시트 URL 입력 -->
+<div class="card mb-4">
+    <div class="card-body">
+        <label class="form-label fw-bold">구글 시트 URL</label>
+        <div class="d-flex gap-2">
+            <input type="text" id="sheetUrlInput" class="form-control sheet-url-input"
+                   placeholder="https://docs.google.com/spreadsheets/d/..."
+                   value="">
+            <button class="btn btn-outline-primary btn-sm" onclick="saveSheetUrl()">저장</button>
+        </div>
+        <small class="text-muted">이 URL은 모든 사이트 크롤링에 공통으로 사용됩니다.</small>
+    </div>
+</div>
+
+<!-- 전체 실행 버튼 -->
+<div class="mb-4">
+    <form id="startAllForm" action="{{ url_for('dashboard.start_all') }}" method="post">
+        <input type="hidden" name="sheet_url" id="allFormSheetUrl">
+        <button type="button" class="all-run-btn" onclick="submitAllForm()">
+            ▶ 전체 사이트 동시 크롤링
+        </button>
+        <small class="text-muted ms-2">5개 사이트를 한 번에 시작합니다.</small>
+    </form>
+</div>
+
+<!-- 사이트별 카드 -->
+<div class="row g-3 mb-4">
+    {% for site_key, site_info in site_config.items() %}
+    {% set job = site_jobs.get(site_key) %}
+    {% set card_class = '' %}
+    {% if job %}
+        {% if job.status == 'running' %}{% set card_class = 'running' %}
+        {% elif job.status == 'pending' %}{% set card_class = 'pending' %}
+        {% elif job.status == 'completed' %}{% set card_class = 'completed' %}
+        {% elif job.status in ['failed', 'cancelled'] %}{% set card_class = 'failed' %}
+        {% endif %}
+    {% endif %}
+
+    <div class="col-md-4">
+        <div class="site-card {{ card_class }}" id="card-{{ site_key }}">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <div>
+                    <span class="site-icon">{{ site_info.icon }}</span>
+                    <strong class="ms-1">{{ site_info.label }}</strong>
+                </div>
+                <span class="status-badge
+                    {% if job %}
+                        {% if job.status == 'running' %}badge-running
+                        {% elif job.status == 'pending' %}badge-pending
+                        {% elif job.status == 'completed' %}badge-completed
+                        {% elif job.status in ['failed', 'cancelled'] %}badge-failed
+                        {% else %}badge-idle{% endif %}
+                    {% else %}badge-idle{% endif %}"
+                    id="badge-{{ site_key }}">
+                    {% if job %}
+                        {% if job.status == 'running' %}크롤링 중
+                        {% elif job.status == 'pending' %}대기 중
+                        {% elif job.status == 'completed' %}완료
+                        {% elif job.status == 'failed' %}실패
+                        {% elif job.status == 'cancelled' %}취소됨
+                        {% else %}대기{% endif %}
+                    {% else %}대기{% endif %}
+                </span>
+            </div>
+
+            <div class="text-muted" style="font-size:12px;">{{ site_info.domain }}</div>
+
+            <!-- 진행률 (실행 중인 경우) -->
+            {% if job and job.status in ['running', 'pending'] %}
+            <div class="progress-section" id="progress-section-{{ site_key }}">
+                <div class="progress mt-2">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated"
+                         id="progress-bar-{{ site_key }}"
+                         role="progressbar"
+                         style="width: {{ job.progress }}%">
+                        {{ job.progress }}%
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <span class="eta-text" id="eta-{{ site_key }}">계산 중...</span>
+                    <span class="eta-text" id="count-{{ site_key }}">{{ job.processed_items or 0 }}/{{ job.total_items or '?' }}</span>
+                </div>
+                <div class="last-item-text" id="last-item-{{ site_key }}"></div>
+            </div>
+            {% elif job and job.status == 'completed' %}
+            <div class="mt-2" style="font-size:12px; color:#198754;">
+                ✅ {{ job.total_items }}개 완료
+                {% if job.completed_at %}
+                · {{ job.completed_at.strftime('%m/%d %H:%M') }}
+                {% endif %}
+            </div>
+            {% elif job and job.status == 'failed' %}
+            <div class="mt-2" style="font-size:12px; color:#dc3545;">
+                ❌ 오류: {{ (job.error_message or '')[:50] }}
+            </div>
+            {% endif %}
+
+            <!-- 버튼 영역 -->
+            <div class="mt-3 d-flex gap-2 flex-wrap">
+                {% if not job or job.status not in ['running', 'pending'] %}
+                <form action="{{ url_for('dashboard.start_site', site_name=site_key) }}" method="post" class="d-inline" onsubmit="injectSheetUrl(this)">
+                    <input type="hidden" name="sheet_url" class="site-sheet-url">
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        {% if job and job.status == 'failed' %}재시도{% else %}크롤링 시작{% endif %}
+                    </button>
+                </form>
+                {% else %}
+                <form action="{{ url_for('dashboard.cancel_job', job_id=job.id) }}" method="post" class="d-inline" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='중지 중...';">
+                    <button type="submit" class="btn btn-warning btn-sm">중지</button>
+                </form>
+                {% endif %}
+
+                {% if job %}
+                <a href="{{ url_for('dashboard.job_detail', job_id=job.id) }}" class="btn btn-outline-secondary btn-sm">로그</a>
+                {% if job.result_file and job.status == 'completed' %}
+                <a href="{{ url_for('dashboard.download_result', job_id=job.id) }}" class="btn btn-success btn-sm">다운로드</a>
+                {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- 최근 작업 목록 -->
+{% if recent_jobs %}
+<div class="card">
+    <div class="card-header">최근 완료 작업</div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>사이트</th>
+                    <th>상태</th>
+                    <th>완료 시간</th>
+                    <th>처리 수</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in recent_jobs %}
+                <tr>
+                    <td>
+                        {% set si = site_config.get(job.site_name, {}) %}
+                        {{ si.get('icon', '') }} {{ si.get('label', job.site_name) }}
+                    </td>
+                    <td>
+                        <span class="badge
+                            {% if job.status == 'completed' %}bg-success
+                            {% elif job.status == 'failed' %}bg-danger
+                            {% else %}bg-secondary{% endif %}">
+                            {{ job.status }}
+                        </span>
+                    </td>
+                    <td style="font-size:12px;">
+                        {% if job.completed_at %}{{ job.completed_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+                    </td>
+                    <td>{{ job.processed_items or 0 }}/{{ job.total_items or '?' }}</td>
+                    <td>
+                        <a href="{{ url_for('dashboard.job_detail', job_id=job.id) }}" class="btn btn-outline-secondary btn-xs" style="font-size:11px; padding:2px 8px;">로그</a>
+                        {% if job.result_file and job.status == 'completed' %}
+                        <a href="{{ url_for('dashboard.download_result', job_id=job.id) }}" class="btn btn-outline-success btn-xs" style="font-size:11px; padding:2px 8px;">Excel</a>
+                        {% endif %}
+                        <form action="{{ url_for('dashboard.delete_job', job_id=job.id) }}" method="post" class="d-inline">
+                            <button type="submit" class="btn btn-outline-danger btn-xs" style="font-size:11px; padding:2px 8px;"
+                                    onclick="return confirm('삭제하시겠습니까?')">삭제</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// =====================================================
+// 구글 시트 URL 관리
+// =====================================================
+function getSheetUrl() {
+    return document.getElementById('sheetUrlInput').value.trim();
+}
+
+function saveSheetUrl() {
+    const url = getSheetUrl();
+    if (!url) { alert('URL을 입력해주세요.'); return; }
+    document.cookie = `sheet_url=${encodeURIComponent(url)};path=/;max-age=2592000`;
+    alert('저장되었습니다.');
+}
+
+function injectSheetUrl(form) {
+    const url = getSheetUrl();
+    if (!url) { alert('구글 시트 URL을 먼저 입력해주세요.'); return false; }
+    form.querySelector('.site-sheet-url').value = url;
+    return true;
+}
+
+function submitAllForm() {
+    const url = getSheetUrl();
+    if (!url) { alert('구글 시트 URL을 먼저 입력해주세요.'); return; }
+    document.getElementById('allFormSheetUrl').value = url;
+    document.getElementById('startAllForm').submit();
+}
+
+// 쿠키에서 URL 복원 (이중 인코딩 방어)
+(function() {
+    const match = document.cookie.match(/sheet_url=([^;]+)/);
+    if (match) {
+        let decoded = match[1];
+        try { decoded = decodeURIComponent(decoded); } catch(e) {}
+        // 이중 인코딩된 경우 한 번 더 디코딩
+        try { if (decoded.includes('%')) decoded = decodeURIComponent(decoded); } catch(e) {}
+        document.getElementById('sheetUrlInput').value = decoded;
+    }
+})();
+
+// =====================================================
+// SSE 실시간 진행률
+// =====================================================
+function connectSSE(jobId, siteKey) {
+    const evtSource = new EventSource(`/api/jobs/${jobId}/stream`);
+    const siteKeyId = siteKey.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    evtSource.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+        if (data.heartbeat) return;
+
+        if (data.done) {
+            evtSource.close();
+            // 완료 시 페이지 새로고침 (카드 상태 갱신)
+            setTimeout(() => location.reload(), 800);
+            return;
+        }
+
+        // 진행률 바 업데이트
+        const pct = data.percent || 0;
+        const bar = document.getElementById(`progress-bar-${siteKey}`);
+        if (bar) {
+            bar.style.width = pct + '%';
+            bar.textContent = pct + '%';
+        }
+
+        // ETA 업데이트
+        const etaEl = document.getElementById(`eta-${siteKey}`);
+        if (etaEl && data.eta_display) {
+            etaEl.textContent = '⏱ ' + data.eta_display;
+        }
+
+        // 처리 수 업데이트
+        const countEl = document.getElementById(`count-${siteKey}`);
+        if (countEl) {
+            countEl.textContent = `${data.processed}/${data.total}`;
+        }
+
+        // 마지막 처리 아이템
+        const lastEl = document.getElementById(`last-item-${siteKey}`);
+        if (lastEl && data.last_item) {
+            lastEl.textContent = data.last_item;
+        }
+
+        // 상태 배지 (속도 표시)
+        const badge = document.getElementById(`badge-${siteKey}`);
+        if (badge && data.speed > 0) {
+            badge.textContent = `크롤링 중 (${data.speed}/s)`;
+        }
+    };
+
+    evtSource.onerror = function() {
+        evtSource.close();
+        // SSE 연결 실패 시 폴링으로 fallback
+        fallbackPoll(jobId, siteKey);
+    };
+}
+
+function fallbackPoll(jobId, siteKey) {
+    const interval = setInterval(async function() {
+        try {
+            const res = await fetch(`/api/progress/${jobId}`);
+            const data = await res.json();
+
+            const bar = document.getElementById(`progress-bar-${siteKey}`);
+            if (bar) {
+                bar.style.width = data.progress + '%';
+                bar.textContent = data.progress + '%';
+            }
+
+            const countEl = document.getElementById(`count-${siteKey}`);
+            if (countEl) {
+                countEl.textContent = `${data.current}/${data.total}`;
+            }
+
+            if (data.status !== 'running' && data.status !== 'pending') {
+                clearInterval(interval);
+                setTimeout(() => location.reload(), 800);
+            }
+        } catch(err) {
+            clearInterval(interval);
+        }
+    }, 2000);
+}
+
+// 실행 중인 작업에 SSE 연결
+document.addEventListener('DOMContentLoaded', function() {
+    {% for job in active_jobs %}
+    {% if job.status in ['running', 'pending'] %}
+    connectSSE({{ job.id }}, '{{ job.site_name }}');
+    {% endif %}
+    {% endfor %}
+});
+</script>
+{% endblock %}

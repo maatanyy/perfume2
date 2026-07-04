@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}시트 URL 설정{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 mx-auto">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">구글 시트 URL 설정</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label">구글 시트 URL</label>
+                        <input type="text" class="form-control" name="sheet_url"
+                               value="{{ current_url }}"
+                               placeholder="https://docs.google.com/spreadsheets/d/...">
+                        <small class="text-muted">공개 설정된 구글 시트 URL을 입력하세요.</small>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">저장</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div class="mt-3">
+            <a href="{{ url_for('dashboard.index') }}" class="btn btn-outline-secondary">← 대시보드로</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

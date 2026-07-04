@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}작업 히스토리{% endblock %}
+
+{% block content %}
+<h2>작업 히스토리</h2>
+
+<div class="card">
+    <div class="card-body">
+        {% if jobs.items %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>사이트</th>
+                        <th>시트 이름</th>
+                        <th>상태</th>
+                        <th>진행률</th>
+                        <th>생성일</th>
+                        <th>완료일</th>
+                        <th>작업</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in jobs.items %}
+                    <tr>
+                        <td>{{ job.site_name }}</td>
+                        <td>{{ job.sheet_name }}</td>
+                        <td>
+                            <span class="badge bg-{{ 'success' if job.status == 'completed' else 'warning' if job.status == 'running' else 'danger' if job.status == 'failed' else 'secondary' }}">
+                                {{ job.status }}
+                            </span>
+                        </td>
+                        <td>{{ job.progress }}%</td>
+                        <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>{{ job.completed_at.strftime('%Y-%m-%d %H:%M') if job.completed_at else '-' }}</td>
+                        <td>
+                            <a href="{{ url_for('dashboard.job_detail', job_id=job.id) }}" class="btn btn-sm btn-outline-primary">상세보기</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- 페이지네이션 -->
+        <nav>
+            <ul class="pagination justify-content-center">
+                {% if jobs.has_prev %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('dashboard.history', page=jobs.prev_num) }}">이전</a>
+                </li>
+                {% endif %}
+                
+                {% for page_num in jobs.iter_pages(left_edge=1, right_edge=1, left_current=1, right_current=2) %}
+                    {% if page_num %}
+                        {% if page_num == jobs.page %}
+                        <li class="page-item active">
+                            <span class="page-link">{{ page_num }}</span>
+                        </li>
+                        {% else %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard.history', page=page_num) }}">{{ page_num }}</a>
+                        </li>
+                        {% endif %}
+                    {% else %}
+                        <li class="page-item disabled">
+                            <span class="page-link">...</span>
+                        </li>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if jobs.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('dashboard.history', page=jobs.next_num) }}">다음</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% else %}
+        <p class="text-muted text-center py-5">작업 히스토리가 없습니다.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+

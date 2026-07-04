@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}작업 상세{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>{{ job.site_name }} 크롤링</h3>
+            </div>
+            <div class="card-body">
+                <dl class="row">
+                    <dt class="col-sm-3">상태</dt>
+                    <dd class="col-sm-9">
+                        <span class="badge bg-{{ 'success' if job.status == 'completed' else 'warning' if job.status == 'running' else 'danger' }}">
+                            {{ job.status }}
+                        </span>
+                    </dd>
+                    <dt class="col-sm-3">시트 이름</dt>
+                    <dd class="col-sm-9">{{ job.sheet_name }}</dd>
+                    <dt class="col-sm-3">진행률</dt>
+                    <dd class="col-sm-9">
+                        <div class="progress">
+                            <div class="progress-bar" style="width: {{ job.progress }}%">{{ job.progress }}%</div>
+                        </div>
+                        {{ job.processed_items }}/{{ job.total_items }}
+                    </dd>
+                    <dt class="col-sm-3">시작 시간</dt>
+                    <dd class="col-sm-9">{{ job.started_at.strftime('%Y-%m-%d %H:%M:%S KST') if job.started_at else '-' }}</dd>
+                    <dt class="col-sm-3">완료 시간</dt>
+                    <dd class="col-sm-9">{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S KST') if job.completed_at else '-' }}</dd>
+                    {% if job.error_message %}
+                    <dt class="col-sm-3">에러 메시지</dt>
+                    <dd class="col-sm-9 text-danger">{{ job.error_message }}</dd>
+                    {% endif %}
+                </dl>
+                
+                {% if job.status in ['pending', 'running'] %}
+                <form method="POST" action="{{ url_for('dashboard.cancel_job', job_id=job.id) }}" class="d-inline">
+                    <button type="submit" class="btn btn-warning" onclick="return confirm('정말 취소하시겠습니까?')">작업 취소</button>
+                </form>
+                {% endif %}
+                {% if job.status == 'completed' and job.result_file %}
+                <a href="{{ url_for('dashboard.download_result', job_id=job.id) }}" class="btn btn-success">
+                    📥 결과 파일 다운로드
+                </a>
+                {% endif %}
+                {% if job.status not in ['running'] %}
+                <form method="POST" action="{{ url_for('dashboard.delete_job', job_id=job.id) }}" class="d-inline">
+                    <button type="submit" class="btn btn-danger" onclick="return confirm('정말 삭제하시게습니까? 모든 로그가 삭제됩니다.')">작업 삭제</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h4>로그</h4>
+                <button id="refreshBtn" class="btn btn-sm btn-outline-primary">🔄 새로고침</button>
+            </div>
+            <div class="card-body">
+                <div id="logContainer" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.9em; background-color: #f8f9fa; padding: 10px; border-radius: 5px;">
+                    {% for log in logs %}
+                    <div class="mb-2 log-entry">
+                        <small class="text-muted">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S KST') }}</small>
+                        <span class="badge bg-{{ 'danger' if log.level == 'ERROR' else 'warning' if log.level == 'WARNING' else 'info' }}">
+                            {{ log.level }}
+                        </span>
+                        <span>{{ log.message }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 자동 새로고침 (5초마다)
+let autoRefresh;
+
+async function updateJobStatus() {
+    try {
+        // 진행률 업데이트
+        const progRes = await fetch('{{ url_for("api.get_progress", job_id=job.id) }}');
+        const data = await progRes.json();
+
+        document.querySelector('.progress-bar').style.width = data.progress + '%';
+        document.querySelector('.progress-bar').textContent = data.progress + '%';
+        document.querySelector('.progress').nextElementSibling.textContent =
+            (data.current || 0) + '/' + (data.total || '?');
+
+        // 로그 업데이트
+        const logRes = await fetch('{{ url_for("api.get_job_logs", job_id=job.id) }}');
+        const logData = await logRes.json();
+        const logContainer = document.getElementById('logContainer');
+        if (logData.logs && logData.logs.length > 0) {
+            let logsHtml = '';
+            logData.logs.forEach(log => {
+                const badgeClass = log.level === 'ERROR' ? 'danger' :
+                                   log.level === 'WARNING' ? 'warning' : 'info';
+                logsHtml += `
+                    <div class="mb-2 log-entry">
+                        <small class="text-muted">${log.created_at}</small>
+                        <span class="badge bg-${badgeClass}">${log.level}</span>
+                        <span>${log.message}</span>
+                    </div>
+                `;
+            });
+            logContainer.innerHTML = logsHtml;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // 완료 시 자동 새로고침 중지
+        if (data.status !== 'running' && data.status !== 'pending') {
+            clearInterval(autoRefresh);
+            setTimeout(() => location.reload(), 1000);
+        }
+    } catch (error) {
+        console.error('상태 업데이트 오류:', error);
+    }
+}
+
+// 수동 새로고침 버튼
+document.getElementById('refreshBtn').addEventListener('click', updateJobStatus);
+
+// 작업이 진행 중이면 자동 새로고침 시작
+{% if job.status in ['pending', 'running'] %}
+autoRefresh = setInterval(updateJobStatus, 5000);
+{% endif %}
+</script>
+{% endblock %}
+

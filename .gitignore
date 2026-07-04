@@ -1,0 +1,27 @@
+# 가상환경
+perfume/
+
+# 파이썬
+__pycache__/
+*.pyc
+
+# 데이터베이스 (기존 사용자 데이터 - 절대 커밋 금지)
+crawling.db
+crawling.db-wal
+crawling.db-shm
+
+# 산출물/로그
+results/
+logs/
+
+# 환경설정
+.env
+
+# macOS
+.DS_Store
+
+# 무관한 별도 프로젝트
+0415_multitrust_new/
+
+# SDD 진행 상태 (스크래치)
+.superpowers/
