@@ -10,13 +10,40 @@ logger = logging.getLogger(__name__)
 
 
 class SSGCrawler(BaseCrawler):
-    """SSG 사이트 크롤러 (JavaScript 많아서 Selenium 필수)"""
+    """SSG.COM 크롤러 - 판매가/쿠폰적용가 분리"""
+
+    SALE_PRICE_SELECTORS = [
+        ".cdtl_new_price.notranslate .ssg_price",
+        ".cdtl_price .ssg_price",
+        ".price_total .ssg_price",
+        "em.ssg_price",
+        ".special_price .ssg_price",
+        # 신세계TV 계열 URL이 fallback으로 들어올 때 대비
+        ".price--3",
+        "._salePrice",
+        ".total_price .price em",
+    ]
+    COUPON_PRICE_SELECTORS = [
+        ".cdtl_bene_price .ssg_price",
+        ".cdtl_row_bene .ssg_price",
+        "[class*='benefit'] .ssg_price",
+    ]
+    DELIVERY_SELECTORS = [
+        ".cdtl_dl.cdtl_delivery_fee li em.ssg_price",
+        ".delivery_fee .ssg_price",
+        ".cdtl_delivery_fee em",
+        ".cdtl_delivery_fee ~ li em.ssg_price",
+    ]
+    SOLD_OUT_SELECTORS = [
+        ".cdtl_btn_soldout",
+        ".btn_soldout",
+        ".cdtl_soldout",
+    ]
 
     def __init__(self):
         super().__init__(use_selenium=False)
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
-        """가격 요소 동적 대기용 선택자"""
         return [
             ".cdtl_new_price.notranslate .ssg_price",
             ".price--3",
@@ -25,105 +52,40 @@ class SSGCrawler(BaseCrawler):
             "._bestPrice",
         ]
 
+    def get_sold_out_selectors(self) -> List[str]:
+        return self.SOLD_OUT_SELECTORS
+
+    def _extract_delivery(self, soup):
+        for selector in self.DELIVERY_SELECTORS:
+            elem = soup.select_one(selector)
+            if elem:
+                digits = re.sub(r"[^\d]", "", elem.get_text())
+                delivery_price = int(digits) if digits else 0
+                return delivery_price, ("유료" if delivery_price > 0 else "무료")
+        return 0, "무료"
+
     def extract_price(self, html: str, url: str) -> Dict:
-        """SSG 가격 정보 추출"""
         soup = BeautifulSoup(html, "lxml")
+        logger.info(f"[SSG] URL: {url[:60]}... HTML 길이: {len(html)}")
 
-        product_price = None
-        delivery_price = 0
-        delivery_status = "무료"
-        is_ssg_shopping = False
+        sale_price = self.select_first_price(soup, self.SALE_PRICE_SELECTORS)
+        coupon_price = self.select_first_price(soup, self.COUPON_PRICE_SELECTORS)
 
-        logger.info(f"[SSG] URL: {url[:60]}...")
-        logger.info(f"[SSG] HTML 길이: {len(html)}")
+        if sale_price is None and coupon_price is None:
+            if self.detect_sold_out(soup):
+                logger.info("[SSG] 품절 표시 감지")
+                return self.build_price_result(
+                    url, delivery_price=None, delivery_status="매진/품절",
+                    status="sold_out", error="페이지에서 품절 표시 감지",
+                )
+            logger.warning("[SSG] ❌ 가격을 찾지 못함")
+            return self.build_price_result(url)
 
-        price_selectors = [
-            ".cdtl_new_price.notranslate .ssg_price",
-            ".price--3",
-            ".price--3 ._salePrice",
-            ".price--3 ._bestPrice",
-            ".cdtl_price .ssg_price",
-            ".price_total .ssg_price",
-            "em.ssg_price",
-            ".special_price .ssg_price",
-            "._salePrice",
-            "._bestPrice",
-            ".div-best ._bestPrice",
-            ".total_price .price em",
-        ]
-
-        price_elem = None
-        for selector in price_selectors:
-            elems = soup.select(selector)
-            if elems:
-                logger.info(f"[SSG] 선택자 '{selector}': {len(elems)}개 발견")
-                for elem in elems:
-                    price_text = re.sub(r"[^\d]", "", elem.get_text())
-                    price = int(price_text) if price_text else None
-                    if price and price > 100:
-                        price_elem = elem
-                        logger.info(f"[SSG] ✅ 가격 발견: {price}원 (선택자: {selector})")
-                        if not is_ssg_shopping:
-                            is_ssg_shopping = (
-                                ".price--3" in selector
-                                or "._salePrice" in selector
-                                or "._bestPrice" in selector
-                                or ".div-best" in selector
-                            )
-                        break
-                if price_elem:
-                    break
-
-        if price_elem:
-            if is_ssg_shopping:
-                sale_price = price_elem.select_one("._salePrice")
-                best_price = price_elem.select_one("._bestPrice")
-                if sale_price:
-                    price_text = sale_price.get_text()
-                elif best_price:
-                    price_text = best_price.get_text()
-                else:
-                    price_text = price_elem.get_text()
-                cleaned = re.sub(r"[^\d]", "", price_text)
-                product_price = int(cleaned) if cleaned and int(cleaned) > 100 else None
-            else:
-                price_text = price_elem.get_text()
-                cleaned = re.sub(r"[^\d]", "", price_text)
-                product_price = int(cleaned) if cleaned and int(cleaned) > 100 else None
-
-        if not is_ssg_shopping:
-            delivery_selectors = [
-                ".cdtl_dl.cdtl_delivery_fee li em.ssg_price",
-                ".delivery_fee .ssg_price",
-                ".cdtl_delivery_fee em",
-            ]
-            for selector in delivery_selectors:
-                delivery_elem = soup.select_one(selector)
-                if delivery_elem:
-                    numbers = re.sub(r"[^\d]", "", delivery_elem.get_text())
-                    delivery_price = int(numbers) if numbers else 0
-                    delivery_status = "유료" if delivery_price > 0 else "무료"
-                    break
-        else:
-            delivery_status = "배송비가 없습니다"
-
-        total_price = (product_price + delivery_price) if product_price is not None else None
-
-        if product_price:
-            logger.info(f"[SSG] ✅ 최종 가격: {product_price}원, 배송비: {delivery_price}원")
-        else:
-            logger.warning(f"[SSG] ❌ 가격을 찾지 못함")
-
-        return {
-            "상품 url": url,
-            "상품 가격": product_price,
-            "배송비": delivery_price,
-            "배송비 여부": delivery_status,
-            "최종 가격": total_price,
-            "결과 상태": "success" if product_price else "not_found",
-            "추출 날짜": self._get_timestamp(),
-        }
-
-    def _get_timestamp(self):
-        from datetime import datetime
-        return datetime.now().isoformat()
+        delivery_price, delivery_status = self._extract_delivery(soup)
+        logger.info(
+            f"[SSG] ✅ 판매가: {sale_price}, 쿠폰적용가: {coupon_price}, 배송비: {delivery_price}"
+        )
+        return self.build_price_result(
+            url, sale_price=sale_price, coupon_price=coupon_price,
+            delivery_price=delivery_price, delivery_status=delivery_status,
+        )
