@@ -18,8 +18,8 @@ class SSGCrawler(BaseCrawler):
         ".price_total .ssg_price",
         "em.ssg_price",
         ".special_price .ssg_price",
-        # 신세계TV 계열 URL이 fallback으로 들어올 때 대비
-        ".price--3",
+        # 신세계TV 계열 URL fallback 대비 (컨테이너가 아닌 leaf 선택자만 사용
+        # — 컨테이너 get_text()는 여러 가격을 이어붙인 값이 됨)
         "._salePrice",
         ".total_price .price em",
     ]
@@ -32,7 +32,6 @@ class SSGCrawler(BaseCrawler):
         ".cdtl_dl.cdtl_delivery_fee li em.ssg_price",
         ".delivery_fee .ssg_price",
         ".cdtl_delivery_fee em",
-        ".cdtl_delivery_fee ~ li em.ssg_price",
     ]
     SOLD_OUT_SELECTORS = [
         ".cdtl_btn_soldout",

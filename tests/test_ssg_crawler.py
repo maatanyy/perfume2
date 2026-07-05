@@ -5,7 +5,7 @@ from crawlers.ssg_crawler import SSGCrawler
 HTML_SALE_WITH_DELIVERY = """
 <html><body>
 <div class="cdtl_new_price notranslate"><em class="ssg_price">45,000</em></div>
-<dl class="cdtl_dl cdtl_delivery_fee"><li><em class="ssg_price">3,000</em></li></dl>
+<ul class="cdtl_dl cdtl_delivery_fee"><li><em class="ssg_price">3,000</em></li></ul>
 </body></html>
 """
 
