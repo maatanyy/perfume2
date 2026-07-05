@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
 import requests
+from datetime import datetime
 
 try:
     import undetected_chromedriver as uc
@@ -38,6 +39,19 @@ SESSION_DEAD_KEYWORDS = [
     "session timed out",
     "connection reset",
     "broken pipe",
+]
+
+# 품절 감지 키워드 (본문 텍스트용)
+SOLD_OUT_KEYWORDS = [
+    "품절", "일시품절", "매진", "판매종료", "판매 종료",
+    "sold out", "soldout", "재고없음", "재고 없음", "구매불가", "구매 불가",
+]
+
+# 범용 품절 선택자 (키워드 텍스트 동반 시에만 품절 판정)
+GENERIC_SOLD_OUT_SELECTORS = [
+    "[class*='soldout']",
+    "[class*='sold_out']",
+    "[class*='sold-out']",
 ]
 
 
@@ -90,6 +104,92 @@ class BaseCrawler(ABC):
         반환값이 비어있으면 readyState 완료 + 최소 대기 사용.
         """
         return []
+
+    @staticmethod
+    def parse_price(text) -> Optional[int]:
+        """텍스트에서 가격(int) 추출. 100 이하(%, 개수 등 오탐)는 None."""
+        import re as _re
+        digits = _re.sub(r"[^\d]", "", text or "")
+        if not digits:
+            return None
+        price = int(digits)
+        return price if price > 100 else None
+
+    @staticmethod
+    def select_first_price(soup, selectors: List[str]) -> Optional[int]:
+        """선택자 목록을 순서대로 시도해 첫 유효 가격 반환."""
+        for selector in selectors:
+            try:
+                elems = soup.select(selector)
+            except Exception:
+                continue
+            for elem in elems:
+                price = BaseCrawler.parse_price(elem.get_text())
+                if price is not None:
+                    return price
+        return None
+
+    def build_price_result(
+        self,
+        url: str,
+        sale_price: Optional[int] = None,
+        coupon_price: Optional[int] = None,
+        delivery_price: Optional[int] = 0,
+        delivery_status: str = "무료",
+        status: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> Dict:
+        """표준 결과 dict 생성. 대표가(상품 가격) = 쿠폰적용가 우선."""
+        if (
+            sale_price is not None
+            and coupon_price is not None
+            and coupon_price >= sale_price
+        ):
+            coupon_price = None  # 쿠폰가가 판매가보다 싸지 않으면 쿠폰 없음
+        representative = coupon_price if coupon_price is not None else sale_price
+        if status is None:
+            status = "success" if representative is not None else "not_found"
+        total = None
+        if representative is not None:
+            total = representative + (delivery_price or 0)
+        result = {
+            "상품 url": url,
+            "판매가": sale_price,
+            "쿠폰적용가": coupon_price,
+            "상품 가격": representative,
+            "배송비": delivery_price,
+            "배송비 여부": delivery_status,
+            "최종 가격": total,
+            "결과 상태": status,
+            "추출 날짜": datetime.now().isoformat(),
+        }
+        if error:
+            result["에러 발생"] = error
+        return result
+
+    def get_sold_out_selectors(self) -> List[str]:
+        """사이트별 품절 표시 선택자 (서브클래스 오버라이드)."""
+        return []
+
+    def detect_sold_out(self, soup) -> bool:
+        """본문에서 품절 표시 감지.
+        사이트별 선택자는 요소 존재만으로, 범용 선택자는 키워드 텍스트까지 확인."""
+        for selector in self.get_sold_out_selectors():
+            try:
+                if soup.select_one(selector):
+                    return True
+            except Exception:
+                continue
+        for selector in GENERIC_SOLD_OUT_SELECTORS:
+            try:
+                elems = soup.select(selector)
+            except Exception:
+                continue
+            for elem in elems:
+                text = elem.get_text(strip=True).lower()
+                if any(kw in text for kw in SOLD_OUT_KEYWORDS):
+                    return True
+        return False
 
     def _get_driver(self):
         """Selenium 드라이버 생성 (스레드 안전) - undetected-chromedriver 우선 사용"""
@@ -446,28 +546,16 @@ class BaseCrawler(ABC):
 
                 except SoldOutError as e:
                     print(f"[INFO] 매진/품절 상품 - 재시도 없이 건너뜀: {str(e)}")
-                    return {
-                        "상품 url": url,
-                        "상품 가격": None,
-                        "배송비": None,
-                        "배송비 여부": "매진/품절",
-                        "최종 가격": None,
-                        "결과 상태": "sold_out",
-                        "에러 발생": f"매진/품절: {str(e)}",
-                        "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    }
+                    return self.build_price_result(
+                        url, delivery_price=None, delivery_status="매진/품절",
+                        status="sold_out", error=f"매진/품절: {str(e)}",
+                    )
                 except SkipRetryError as e:
                     print(f"[INFO] 재시도 불필요 에러: {str(e)}")
-                    return {
-                        "상품 url": url,
-                        "상품 가격": None,
-                        "배송비": None,
-                        "배송비 여부": "처리 불가",
-                        "최종 가격": None,
-                        "결과 상태": "error",
-                        "에러 발생": str(e),
-                        "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    }
+                    return self.build_price_result(
+                        url, delivery_price=None, delivery_status="처리 불가",
+                        status="error", error=str(e),
+                    )
                 except Exception as e:
                     error_msg = str(e)
                     print(f"[ERROR] Attempt {attempt} failed: {error_msg}")
@@ -478,39 +566,22 @@ class BaseCrawler(ABC):
                         "삭제된 상품", "존재하지 않는",
                     ]
                     if any(kw in error_msg.lower() for kw in skip_keywords):
-                        return {
-                            "상품 url": url,
-                            "상품 가격": None,
-                            "배송비": None,
-                            "배송비 여부": "매진/품절",
-                            "최종 가격": None,
-                            "결과 상태": "sold_out",
-                            "에러 발생": error_msg,
-                            "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        }
+                        return self.build_price_result(
+                            url, delivery_price=None, delivery_status="매진/품절",
+                            status="sold_out", error=error_msg,
+                        )
 
                     if attempt == max_retries:
-                        return {
-                            "상품 url": url,
-                            "상품 가격": None,
-                            "배송비": None,
-                            "배송비 여부": "크롤링 실패",
-                            "최종 가격": None,
-                            "결과 상태": "error",
-                            "에러 발생": error_msg,
-                            "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        }
+                        return self.build_price_result(
+                            url, delivery_price=None, delivery_status="크롤링 실패",
+                            status="error", error=error_msg,
+                        )
                     time.sleep(2 * attempt)
 
-            return {
-                "상품 url": url,
-                "상품 가격": None,
-                "배송비": None,
-                "배송비 여부": "모든 재시도 실패",
-                "최종 가격": None,
-                "결과 상태": "error",
-                "추출 날짜": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
+            return self.build_price_result(
+                url, delivery_price=None, delivery_status="모든 재시도 실패",
+                status="error",
+            )
         finally:
             if auto_close:
                 self._close_driver()
