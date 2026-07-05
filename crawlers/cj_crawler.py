@@ -10,13 +10,35 @@ logger = logging.getLogger(__name__)
 
 
 class CJCrawler(BaseCrawler):
-    """CJ 온스타일 크롤러 (JavaScript 동적 로딩으로 Selenium 사용)"""
+    """CJ온스타일 크롤러 (Selenium) - 판매가/쿠폰적용가 분리"""
+
+    SALE_PRICE_SELECTORS = [
+        ".item_price strong.ff_price",
+        ".opt_area .item_price strong.ff_price",
+        ".price_bx .txt_price .ff_price",
+        ".txt_price .ff_price",
+        ".total_price_wrap strong.ff_price",
+        ".price_area .price_txt > strong.ff_price",
+        ".ff_price",
+    ]
+    COUPON_PRICE_SELECTORS = [
+        ".coupon_price .ff_price",
+        ".price_coupon .ff_price",
+        ".benefit_price .ff_price",
+    ]
+    DELIVERY_SELECTORS = [
+        ".gift_delivery_wrap .delivery_fees strong",
+        ".delivery_fees strong",
+    ]
+    SOLD_OUT_SELECTORS = [
+        ".btn_soldout",
+        ".soldout_layer .txt",
+    ]
 
     def __init__(self):
         super().__init__(use_selenium=True)
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
-        """가격 요소 동적 대기용 선택자"""
         return [
             ".item_price strong.ff_price",
             ".ff_price",
@@ -24,69 +46,40 @@ class CJCrawler(BaseCrawler):
             ".total_price_wrap strong.ff_price",
         ]
 
+    def get_sold_out_selectors(self) -> List[str]:
+        return self.SOLD_OUT_SELECTORS
+
+    def _extract_delivery(self, soup):
+        for selector in self.DELIVERY_SELECTORS:
+            elem = soup.select_one(selector)
+            if elem:
+                digits = re.sub(r"[^\d]", "", elem.get_text())
+                delivery_price = int(digits) if digits else 0
+                return delivery_price, ("유료" if delivery_price > 0 else "무료")
+        return 0, "무료"
+
     def extract_price(self, html: str, url: str) -> Dict:
-        """CJ 가격 정보 추출"""
         soup = BeautifulSoup(html, "lxml")
+        logger.info(f"[CJ] URL: {url[:60]}... HTML 길이: {len(html)}")
 
-        product_price = None
-        delivery_price = 0
-        delivery_status = "무료"
+        sale_price = self.select_first_price(soup, self.SALE_PRICE_SELECTORS)
+        coupon_price = self.select_first_price(soup, self.COUPON_PRICE_SELECTORS)
 
-        logger.info(f"[CJ] URL: {url[:60]}...")
-        logger.info(f"[CJ] HTML 길이: {len(html)}")
+        if sale_price is None and coupon_price is None:
+            if self.detect_sold_out(soup):
+                logger.info("[CJ] 품절 표시 감지")
+                return self.build_price_result(
+                    url, delivery_price=None, delivery_status="매진/품절",
+                    status="sold_out", error="페이지에서 품절 표시 감지",
+                )
+            logger.warning("[CJ] ❌ 가격을 찾지 못함")
+            return self.build_price_result(url)
 
-        price_selectors = [
-            ".item_price strong.ff_price",
-            ".opt_area .item_price strong.ff_price",
-            ".price_bx .txt_price .ff_price",
-            ".txt_price .ff_price",
-            ".total_price_wrap strong.ff_price",
-            ".ff_price",
-            ".price_area .price_txt > strong.ff_price",
-            ".price_area span:not(.txt_sale):not(.txt_del) > strong.ff_price",
-        ]
-
-        price_elem = None
-        for selector in price_selectors:
-            elems = soup.select(selector)
-            for elem in elems:
-                price_text = re.sub(r"[^\d]", "", elem.get_text())
-                price = int(price_text) if price_text else None
-                if price and price > 100:
-                    price_elem = elem
-                    product_price = price
-                    logger.info(f"[CJ] ✅ 가격 발견: {product_price}원 (선택자: {selector})")
-                    break
-            if price_elem:
-                break
-
-        if product_price is None:
-            logger.warning(f"[CJ] ❌ 가격을 찾지 못함")
-
-        delivery_selectors = [
-            ".gift_delivery_wrap .delivery_fees strong",
-            ".delivery_fees strong",
-        ]
-        for selector in delivery_selectors:
-            delivery_elem = soup.select_one(selector)
-            if delivery_elem:
-                delivery_text = re.sub(r"[^\d]", "", delivery_elem.get_text())
-                delivery_price = int(delivery_text) if delivery_text else 0
-                delivery_status = "유료" if delivery_price > 0 else "무료"
-                break
-
-        total_price = (product_price + delivery_price) if product_price is not None else None
-
-        return {
-            "상품 url": url,
-            "상품 가격": product_price,
-            "배송비": delivery_price,
-            "배송비 여부": delivery_status,
-            "최종 가격": total_price,
-            "결과 상태": "success" if product_price else "not_found",
-            "추출 날짜": self._get_timestamp(),
-        }
-
-    def _get_timestamp(self):
-        from datetime import datetime
-        return datetime.now().isoformat()
+        delivery_price, delivery_status = self._extract_delivery(soup)
+        logger.info(
+            f"[CJ] ✅ 판매가: {sale_price}, 쿠폰적용가: {coupon_price}, 배송비: {delivery_price}"
+        )
+        return self.build_price_result(
+            url, sale_price=sale_price, coupon_price=coupon_price,
+            delivery_price=delivery_price, delivery_status=delivery_status,
+        )
