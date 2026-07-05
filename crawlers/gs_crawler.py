@@ -10,82 +10,71 @@ logger = logging.getLogger(__name__)
 
 
 class GSCrawler(BaseCrawler):
-    """GS Shop 크롤러 - HTTP 요청 방식 (JavaScript 불필요)"""
+    """GS샵 크롤러 - HTTP 방식, 판매가/쿠폰적용가 분리"""
+
+    SALE_PRICE_SELECTORS = [
+        ".price-definition-ins ins strong",
+        "#totValue",
+        "em#totValue",
+        ".item_price strong",
+        ".price_value strong",
+        ".sale_price strong",
+    ]
+    COUPON_PRICE_SELECTORS = [
+        ".price-definition-coupon strong",
+        ".coupon-price strong",
+    ]
+    DELIVERY_SELECTORS = [
+        ".shipCate strong",
+        "p.shipCate strong",
+        ".paragraph1 .shipCate strong",
+    ]
+    SOLD_OUT_SELECTORS = [
+        ".prd-btn-soldout",
+        ".btn-soldout",
+    ]
 
     def __init__(self):
-        super().__init__(use_selenium=False)  # HTTP 요청으로 충분
+        super().__init__(use_selenium=False)
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return []  # HTTP 방식 - 불필요
 
+    def get_sold_out_selectors(self) -> List[str]:
+        return self.SOLD_OUT_SELECTORS
+
+    def _extract_delivery(self, soup):
+        for selector in self.DELIVERY_SELECTORS:
+            elem = soup.select_one(selector)
+            if elem:
+                first_part = elem.get_text().split("원")[0]
+                digits = re.sub(r"[^\d]", "", first_part)
+                delivery_price = int(digits) if digits else 0
+                return delivery_price, ("유료" if delivery_price > 0 else "무료")
+        return 0, "무료"
+
     def extract_price(self, html: str, url: str) -> Dict:
-        """GS Shop 가격 정보 추출"""
         soup = BeautifulSoup(html, "lxml")
+        logger.info(f"[GS] URL: {url[:60]}... HTML 길이: {len(html)}")
 
-        product_price = None
-        delivery_price = 0
-        delivery_status = "무료"
+        sale_price = self.select_first_price(soup, self.SALE_PRICE_SELECTORS)
+        coupon_price = self.select_first_price(soup, self.COUPON_PRICE_SELECTORS)
 
-        logger.info(f"[GS] URL: {url[:60]}...")
-        logger.info(f"[GS] HTML 길이: {len(html)}")
+        if sale_price is None and coupon_price is None:
+            if self.detect_sold_out(soup):
+                logger.info("[GS] 품절 표시 감지")
+                return self.build_price_result(
+                    url, delivery_price=None, delivery_status="매진/품절",
+                    status="sold_out", error="페이지에서 품절 표시 감지",
+                )
+            logger.warning("[GS] ❌ 가격을 찾지 못함")
+            return self.build_price_result(url)
 
-        # 가격 선택자 (우선순위대로)
-        price_selectors = [
-            ".price-definition-ins ins strong",
-            "#totValue",
-            "em#totValue",
-            ".item_price strong",
-            ".price_value strong",
-            ".sale_price strong",
-        ]
-
-        price_elem = None
-        for selector in price_selectors:
-            elems = soup.select(selector)
-            for elem in elems:
-                price_text = re.sub(r"[^\d]", "", elem.get_text())
-                price = int(price_text) if price_text else None
-                if price and price > 100:
-                    price_elem = elem
-                    product_price = price
-                    logger.info(f"[GS] ✅ 가격 발견: {product_price}원 (선택자: {selector})")
-                    break
-            if price_elem:
-                break
-
-        if product_price is None:
-            logger.warning(f"[GS] ❌ 가격을 찾지 못함")
-
-        # 배송비 추출
-        delivery_selectors = [
-            ".shipCate strong",
-            "p.shipCate strong",
-            ".paragraph1 .shipCate strong",
-        ]
-
-        for selector in delivery_selectors:
-            delivery_elem = soup.select_one(selector)
-            if delivery_elem:
-                text = delivery_elem.get_text()
-                first_part = text.split("원")[0]
-                delivery_text = re.sub(r"[^\d]", "", first_part)
-                delivery_price = int(delivery_text) if delivery_text else 0
-                delivery_status = "유료" if delivery_price > 0 else "무료"
-                break
-
-        total_price = (
-            (product_price + delivery_price) if product_price is not None else None
+        delivery_price, delivery_status = self._extract_delivery(soup)
+        logger.info(
+            f"[GS] ✅ 판매가: {sale_price}, 쿠폰적용가: {coupon_price}, 배송비: {delivery_price}"
         )
-
-        return {
-            "상품 url": url,
-            "상품 가격": product_price,
-            "배송비": delivery_price,
-            "배송비 여부": delivery_status,
-            "최종 가격": total_price,
-            "추출 날짜": self._get_timestamp(),
-        }
-
-    def _get_timestamp(self):
-        from datetime import datetime
-        return datetime.now().isoformat()
+        return self.build_price_result(
+            url, sale_price=sale_price, coupon_price=coupon_price,
+            delivery_price=delivery_price, delivery_status=delivery_status,
+        )
