@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 from typing import Dict, List
 import re
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +41,23 @@ class LotteCrawler(BaseCrawler):
         ".soldout_wrap",
     ]
 
+    # 동시 burst 요청 시 롯데아이몰 안티봇이 403을 반환하므로, 스레드/인스턴스와
+    # 무관하게 클래스 전역으로 요청 간 최소 간격을 강제한다
+    MIN_REQUEST_INTERVAL = 1.2  # 초
+    _rate_lock = threading.Lock()
+    _last_fetch_at = 0.0
+
     def __init__(self):
         super().__init__(use_selenium=False)
+
+    def fetch_page(self, url: str, wait_time: int = 2):
+        cls = LotteCrawler
+        with cls._rate_lock:
+            wait = cls.MIN_REQUEST_INTERVAL - (time.monotonic() - cls._last_fetch_at)
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_fetch_at = time.monotonic()
+        return super().fetch_page(url, wait_time)
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return []

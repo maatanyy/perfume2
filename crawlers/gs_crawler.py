@@ -45,7 +45,12 @@ class GSCrawler(BaseCrawler):
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS
 
-    def _extract_delivery(self, soup):
+    # 실사이트 배송비 표시는 JS가 페이지 내 JSON(dlvTxt 등)을 읽어 그리므로
+    # 정적 HTML에는 CSS 선택자로 잡히는 요소가 없다. JSON 문자열에서 직접
+    # 추출하는 fallback. 예: "1000만원 이상 무료배송 (1000만원 미만 배송비 2,500원)"
+    DELIVERY_JSON_KEYS = ["dlvTxt", "prdDtlDlvInfo", "floatingDlvTxt"]
+
+    def _extract_delivery(self, soup, html=""):
         for selector in self.DELIVERY_SELECTORS:
             elem = soup.select_one(selector)
             if elem:
@@ -53,6 +58,25 @@ class GSCrawler(BaseCrawler):
                 digits = re.sub(r"[^\d]", "", first_part)
                 delivery_price = int(digits) if digits else 0
                 return delivery_price, ("유료" if delivery_price > 0 else "무료")
+        return self._extract_delivery_from_json(html)
+
+    def _extract_delivery_from_json(self, html):
+        for key in self.DELIVERY_JSON_KEYS:
+            m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', html)
+            if not m:
+                continue
+            # JSON 문자열 안에 HTML 태그가 섞여 있음 (예: "유료배송 <strong>2,500</strong>원")
+            text = re.sub(r"<[^>]*>", "", m.group(1))
+            # "N만원 이상 무료배송 (미만 배송비 X원)" 꼴이 흔하므로
+            # 무료 판정보다 "배송비 X원" 금액 추출을 먼저 시도한다
+            fee = re.search(r"배송비\s*:?\s*([\d,]+)\s*원", text)
+            if not fee and "유료" in text:
+                fee = re.search(r"([\d,]+)\s*원", text)
+            if fee:
+                delivery_price = int(fee.group(1).replace(",", ""))
+                return delivery_price, ("유료" if delivery_price > 0 else "무료")
+            if "무료배송" in text or "무료 배송" in text:
+                return 0, "무료"
         return 0, "무료"
 
     def extract_price(self, html: str, url: str) -> Dict:
@@ -72,7 +96,7 @@ class GSCrawler(BaseCrawler):
             logger.warning("[GS] ❌ 가격을 찾지 못함")
             return self.build_price_result(url)
 
-        delivery_price, delivery_status = self._extract_delivery(soup)
+        delivery_price, delivery_status = self._extract_delivery(soup, html)
         logger.info(
             f"[GS] ✅ 판매가: {sale_price}, 쿠폰적용가: {coupon_price}, 배송비: {delivery_price}"
         )

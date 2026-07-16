@@ -65,3 +65,21 @@ def test_sold_out():
 def test_not_found():
     r = LotteCrawler().extract_price(HTML_EMPTY, "http://t")
     assert r["결과 상태"] == "not_found"
+
+
+def test_fetch_page_rate_limited(monkeypatch):
+    """롯데는 동시 burst 시 안티봇 403이 발생하므로, 인스턴스/스레드와
+    무관하게 클래스 전역으로 요청 간 최소 간격을 강제해야 한다."""
+    import time
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html></html>")
+    monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.3)
+    monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
+
+    a, b = LotteCrawler(), LotteCrawler()
+    start = time.monotonic()
+    a.fetch_page("http://t/1")
+    b.fetch_page("http://t/2")
+    elapsed = time.monotonic() - start
+    assert elapsed >= 0.3
