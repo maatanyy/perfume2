@@ -68,3 +68,21 @@ def test_bare_fallback_skips_coupon_and_delivery_em_ssg_price():
     r = SSGCrawler().extract_price(HTML_BARE_FALLBACK_WITH_NOISE, "http://t")
     assert r["판매가"] == 45000
     assert r["쿠폰적용가"] == 40500
+
+
+# 판매가 em과 쿠폰 컨테이너 내부 em의 마크업이 byte-identical한 경우 —
+# BS4의 == 는 마크업 동등성이라 동일성(id) 비교가 아니면 진짜 판매가까지
+# 건너뛰게 된다.
+HTML_BARE_FALLBACK_IDENTICAL_MARKUP = """
+<html><body>
+<div class="cdtl_bene_price"><em class="ssg_price">40,500</em></div>
+<div class="some_price_wrap"><em class="ssg_price">40,500</em></div>
+</body></html>
+"""
+
+
+def test_bare_fallback_identical_markup_outside_excluded_container():
+    """제외 컨테이너 밖의 판매가 em이 컨테이너 내부 em과 마크업이 같아도
+    건너뛰지 않고 판매가로 인식해야 한다."""
+    r = SSGCrawler().extract_price(HTML_BARE_FALLBACK_IDENTICAL_MARKUP, "http://t")
+    assert r["판매가"] == 40500

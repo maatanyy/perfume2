@@ -71,14 +71,17 @@ class SSGCrawler(BaseCrawler):
     def _select_bare_ssg_price(self, soup):
         """bare 'em.ssg_price' fallback: 쿠폰/배송비 컨테이너 내부 요소는
         건너뛰고, 살아남은 첫 파싱 가능한 가격을 반환한다."""
-        excluded_elems = []
+        # id() 기반 동일성 비교: BS4의 == 는 마크업 동등성이라
+        # 제외 컨테이너 밖의 동일 마크업 요소까지 건너뛰게 된다
+        excluded_ids = set()
         for container_selector in self.EXCLUDED_BARE_PRICE_CONTAINERS:
             try:
-                excluded_elems.extend(soup.select(container_selector))
+                for container in soup.select(container_selector):
+                    excluded_ids.update(id(d) for d in container.descendants)
             except Exception:
                 continue
         for elem in soup.select("em.ssg_price"):
-            if any(elem in container.descendants for container in excluded_elems):
+            if id(elem) in excluded_ids:
                 continue
             price = self.parse_price(elem.get_text())
             if price is not None:

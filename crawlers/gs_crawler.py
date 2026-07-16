@@ -20,7 +20,7 @@ class GSCrawler(BaseCrawler):
         ".price_value strong",
         ".sale_price strong",
     ]
-    # 실사이트에서 쿠폰가 노출 사례로 미검증 (2026-07 검증 시 쿠폰 미노출/403)
+    # 실사이트에서 쿠폰가 노출 사례로 미검증 (2026-07 검증 시 쿠폰 미노출)
     # — 쿠폰가 오탐 시 이 선택자부터 의심할 것.
     COUPON_PRICE_SELECTORS = [
         ".price-definition-coupon strong",
