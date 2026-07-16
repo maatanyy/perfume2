@@ -23,6 +23,8 @@ class SSGCrawler(BaseCrawler):
         "._salePrice",
         ".total_price .price em",
     ]
+    # 실사이트에서 쿠폰가 노출 사례로 미검증 (2026-07 검증 시 쿠폰 미노출/403)
+    # — 쿠폰가 오탐 시 이 선택자부터 의심할 것.
     COUPON_PRICE_SELECTORS = [
         ".cdtl_bene_price .ssg_price",
         ".cdtl_row_bene .ssg_price",
@@ -32,6 +34,18 @@ class SSGCrawler(BaseCrawler):
         ".cdtl_dl.cdtl_delivery_fee li em.ssg_price",
         ".delivery_fee .ssg_price",
         ".cdtl_delivery_fee em",
+    ]
+    # bare 'em.ssg_price' fallback 탐색 시 제외할 컨테이너.
+    # COUPON_PRICE_SELECTORS / DELIVERY_SELECTORS와 동일한 영역의 컨테이너
+    # 클래스만 모아둔 것 — 쿠폰가/배송비 영역에도 em.ssg_price가 있어
+    # bare fallback이 이를 판매가로 오인하는 것을 방지한다.
+    EXCLUDED_BARE_PRICE_CONTAINERS = [
+        ".cdtl_bene_price",
+        ".cdtl_row_bene",
+        "[class*='benefit']",
+        ".cdtl_dl.cdtl_delivery_fee",
+        ".delivery_fee",
+        ".cdtl_delivery_fee",
     ]
     SOLD_OUT_SELECTORS = [
         ".cdtl_btn_soldout",
@@ -54,6 +68,36 @@ class SSGCrawler(BaseCrawler):
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS
 
+    def _select_bare_ssg_price(self, soup):
+        """bare 'em.ssg_price' fallback: 쿠폰/배송비 컨테이너 내부 요소는
+        건너뛰고, 살아남은 첫 파싱 가능한 가격을 반환한다."""
+        excluded_elems = []
+        for container_selector in self.EXCLUDED_BARE_PRICE_CONTAINERS:
+            try:
+                excluded_elems.extend(soup.select(container_selector))
+            except Exception:
+                continue
+        for elem in soup.select("em.ssg_price"):
+            if any(elem in container.descendants for container in excluded_elems):
+                continue
+            price = self.parse_price(elem.get_text())
+            if price is not None:
+                return price
+        return None
+
+    def _select_sale_price(self, soup):
+        """SALE_PRICE_SELECTORS를 순서대로 시도.
+        마지막 bare 'em.ssg_price' fallback만 쿠폰/배송비 컨테이너를
+        제외하고 탐색한다 (다른 선택자들의 우선순위는 그대로 유지)."""
+        for selector in self.SALE_PRICE_SELECTORS:
+            if selector == "em.ssg_price":
+                price = self._select_bare_ssg_price(soup)
+            else:
+                price = self.select_first_price(soup, [selector])
+            if price is not None:
+                return price
+        return None
+
     def _extract_delivery(self, soup):
         for selector in self.DELIVERY_SELECTORS:
             elem = soup.select_one(selector)
@@ -67,7 +111,7 @@ class SSGCrawler(BaseCrawler):
         soup = BeautifulSoup(html, "lxml")
         logger.info(f"[SSG] URL: {url[:60]}... HTML 길이: {len(html)}")
 
-        sale_price = self.select_first_price(soup, self.SALE_PRICE_SELECTORS)
+        sale_price = self._select_sale_price(soup)
         coupon_price = self.select_first_price(soup, self.COUPON_PRICE_SELECTORS)
 
         if sale_price is None and coupon_price is None:

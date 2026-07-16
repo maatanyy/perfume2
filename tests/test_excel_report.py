@@ -112,3 +112,49 @@ def test_reversal_sheet_empty(tmp_path):
     wb = openpyxl.load_workbook(path)
     ws = wb["가격 역전 항목"]
     assert ws.cell(row=2, column=1).value == "가격 역전 항목이 없습니다."
+
+
+def test_flat_sheet_missing_product_not_dropped(tmp_path):
+    """product 레벨 크롤링 자체가 실패해 prices가 비어있으면
+    제품 자체가 사라지지 않고 오류 행으로 남아야 한다."""
+    results = RESULTS + [
+        {
+            "product_id": 3,
+            "product_name": "실패한 제품 EDT 50ml",
+            "timestamp": "2026-07-04T12:02:00",
+            "result_status": "error",
+            "prices": [],
+            "error": "크롤링 실패: 모든 판매처에서 페이지 로드 불가",
+        },
+    ]
+    path = save_results_excel(results, "ssg", results_dir=str(tmp_path))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["전체 결과"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    failed_rows = [r for r in rows if r[0] == "실패한 제품 EDT 50ml"]
+    assert len(failed_rows) == 1
+    row = failed_rows[0]
+    assert row[1] == "-"   # 판매처
+    assert row[2] == "-"   # URL
+    assert row[3] == "-"   # 판매가
+    assert row[8] == "오류"  # 상태
+    assert "크롤링 실패" in row[9]  # 비고
+
+
+def test_flat_sheet_missing_product_none_name(tmp_path):
+    """product_name이 None이어도 'N/A'로 표시되어야 한다 (or 패턴 방어)."""
+    results = [
+        {
+            "product_id": 4,
+            "product_name": None,
+            "timestamp": "2026-07-04T12:03:00",
+            "result_status": "error",
+            "prices": [],
+        },
+    ]
+    path = save_results_excel(results, "ssg", results_dir=str(tmp_path))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["전체 결과"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    assert len(rows) == 1
+    assert rows[0][0] == "N/A"

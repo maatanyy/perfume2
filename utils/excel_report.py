@@ -77,6 +77,26 @@ def _build_row(product_name: str, price: Dict) -> Dict:
     return row
 
 
+def _build_missing_row(product_name: str, error) -> Dict:
+    """제품 레벨 크롤링 자체가 실패해 prices가 비어있을 때 표시할 오류 행.
+
+    판매처/URL/가격 정보가 전혀 없으므로 모두 '-'로 채우고, 비고에는
+    상위 error 메시지(있으면) 혹은 일반 안내 문구를 남긴다."""
+    return {
+        "제품명": product_name,
+        "판매처": "-",
+        "URL": "-",
+        "판매가": "-",
+        "쿠폰율": "-",
+        "쿠폰적용가": "-",
+        "배송비": "-",
+        "최종가격": "-",
+        "상태": STATUS_DISPLAY["error"],
+        "비고": str(error or "크롤링 결과 없음 (판매처별 가격 데이터 누락)")[:100],
+        "status_key": "error",
+    }
+
+
 def _make_formats(workbook) -> Dict:
     return {
         "header": workbook.add_format({
@@ -121,8 +141,15 @@ def _write_flat_sheet(ws, results: List[Dict], fmt: Dict):
 
     row_idx = 1
     for result in results:
-        name = result.get("product_name", "N/A")
-        for price in result.get("prices", []):
+        name = result.get("product_name") or "N/A"
+        prices = result.get("prices", [])
+        if not prices:
+            # 제품 레벨 크롤링 실패 (prices가 비어있음) — 행 자체가 통째로
+            # 누락되지 않도록 오류 행 1개를 남긴다.
+            _write_row(ws, row_idx, _build_missing_row(name, result.get("error")), fmt)
+            row_idx += 1
+            continue
+        for price in prices:
             _write_row(ws, row_idx, _build_row(name, price), fmt)
             row_idx += 1
 
@@ -155,7 +182,7 @@ def _write_reversal_sheet(ws, results: List[Dict], fmt: Dict):
         if not cheaper:
             continue
 
-        name = result.get("product_name", "N/A")
+        name = result.get("product_name") or "N/A"
         _write_row(ws, row_idx, _build_row(name, waffle), fmt)
         ws.write(row_idx, diff_col, "-", fmt["text"])
         row_idx += 1

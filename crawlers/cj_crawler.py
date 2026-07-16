@@ -21,6 +21,8 @@ class CJCrawler(BaseCrawler):
         ".price_area .price_txt > strong.ff_price",
         ".ff_price",
     ]
+    # 실사이트에서 쿠폰가 노출 사례로 미검증 (2026-07 검증 시 쿠폰 미노출/403)
+    # — 쿠폰가 오탐 시 이 선택자부터 의심할 것.
     COUPON_PRICE_SELECTORS = [
         ".coupon_price .ff_price",
         ".price_coupon .ff_price",
