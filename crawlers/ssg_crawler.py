@@ -1,8 +1,8 @@
 """SSG 크롤러"""
 
-from crawlers.base_crawler import BaseCrawler
+from crawlers.base_crawler import BaseCrawler, SkipRetryError
 from bs4 import BeautifulSoup
-from typing import Dict, List
+from typing import Dict, List, Optional
 import re
 import logging
 
@@ -53,8 +53,24 @@ class SSGCrawler(BaseCrawler):
         ".cdtl_soldout",
     ]
 
+    # www.ssg.com(본몰)은 Akamai Bot Manager가 상품 페이지를 상시 차단한다.
+    # 2026-07 실측: 파이썬 HTTP(403), 일반 Selenium headless(차단 페이지),
+    # undetected-chromedriver headless + 홈 워밍업(홈은 통과, 상품 페이지 차단)
+    # 모두 실패. HTTP가 통과하는 서브도메인(shinsegaemall/department)은 정상
+    # 수집되므로, www만 재시도 없이 명확한 오류로 즉시 기록한다.
+    BLOCKED_HOST = "www.ssg.com"
+    BLOCKED_HOST_ERROR = (
+        "SSG 본몰(www.ssg.com) 봇 차단(Akamai) — 자동 수집 불가, 브라우저에서 직접 확인 필요"
+    )
+
     def __init__(self):
         super().__init__(use_selenium=False)
+
+    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        html = super().fetch_page(url, wait_time)
+        if html is None and self.BLOCKED_HOST in url.lower():
+            raise SkipRetryError(self.BLOCKED_HOST_ERROR)
+        return html
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return [

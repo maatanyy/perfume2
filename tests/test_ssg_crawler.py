@@ -86,3 +86,52 @@ def test_bare_fallback_identical_markup_outside_excluded_container():
     건너뛰지 않고 판매가로 인식해야 한다."""
     r = SSGCrawler().extract_price(HTML_BARE_FALLBACK_IDENTICAL_MARKUP, "http://t")
     assert r["판매가"] == 40500
+
+
+# --- www.ssg.com 봇 차단 빠른 실패 ---
+# www.ssg.com은 Akamai가 상품 페이지를 상시 차단한다 (HTTP/headless 브라우저
+# 모두 실측 차단 확인). www는 재시도 없이 명확한 오류로 즉시 기록하고,
+# HTTP가 통과하는 서브도메인은 기존 재시도 경로를 유지해야 한다.
+
+def test_www_http_failure_fails_fast_with_clear_error(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    r = SSGCrawler().crawl_price("https://www.ssg.com/item/itemView.ssg?itemId=1")
+    assert r["결과 상태"] == "error"
+    assert "봇 차단" in r["에러 발생"]
+    assert len(calls) == 1             # 재시도 없이 즉시 실패
+
+
+def test_subdomain_http_failure_keeps_retry_path(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    r = SSGCrawler().crawl_price(
+        "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1", max_retries=1
+    )
+    assert r["결과 상태"] == "error"
+    assert "봇 차단" not in r["에러 발생"]  # 일반 실패 메시지 유지
+
+
+def test_www_http_success_extracts_normally(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: HTML_SALE_WITH_DELIVERY
+    )
+    r = SSGCrawler().crawl_price("https://www.ssg.com/item/itemView.ssg?itemId=1")
+    assert r["결과 상태"] == "success"
+    assert r["판매가"] == 45000
