@@ -42,10 +42,14 @@ class LotteCrawler(BaseCrawler):
     ]
 
     # 동시 burst 요청 시 롯데아이몰 안티봇이 403을 반환하므로, 스레드/인스턴스와
-    # 무관하게 클래스 전역으로 요청 간 최소 간격을 강제한다
+    # 무관하게 클래스 전역으로 요청 간 최소 간격을 강제한다.
+    # 간격을 지켜도 롤링 윈도우 추정 일시 차단이 걸릴 수 있어, 실패 시
+    # 냉각 후 crawl_price 재시도를 탄다 (SSG와 동일 패턴).
     MIN_REQUEST_INTERVAL = 1.2  # 초
+    RATE_LIMIT_COOLDOWN = 20.0  # 초
     _rate_lock = threading.Lock()
     _last_fetch_at = 0.0
+    _cooldown_until = 0.0
 
     def __init__(self):
         super().__init__(use_selenium=False)
@@ -53,11 +57,20 @@ class LotteCrawler(BaseCrawler):
     def fetch_page(self, url: str, wait_time: int = 2):
         cls = LotteCrawler
         with cls._rate_lock:
-            wait = cls.MIN_REQUEST_INTERVAL - (time.monotonic() - cls._last_fetch_at)
+            now = time.monotonic()
+            wait = max(
+                cls.MIN_REQUEST_INTERVAL - (now - cls._last_fetch_at),
+                cls._cooldown_until - now,
+            )
             if wait > 0:
                 time.sleep(wait)
             cls._last_fetch_at = time.monotonic()
-        return super().fetch_page(url, wait_time)
+        html = super().fetch_page(url, wait_time)
+        if html is None:
+            # 일시 차단(403 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
+            with cls._rate_lock:
+                cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+        return html
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return []

@@ -83,3 +83,25 @@ def test_fetch_page_rate_limited(monkeypatch):
     b.fetch_page("http://t/2")
     elapsed = time.monotonic() - start
     assert elapsed >= 0.3
+
+
+def test_fetch_failure_triggers_cooldown(monkeypatch):
+    """요청 실패(일시 차단 추정) 후 다음 요청은 냉각 시간이 지난 뒤에
+    나가야 한다 (롤링 윈도우 403 회복용)."""
+    import time
+    from crawlers.base_crawler import BaseCrawler
+
+    results = [None, "<html>ok</html>"]
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
+    )
+    monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(LotteCrawler, "RATE_LIMIT_COOLDOWN", 0.4)
+    monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_cooldown_until", 0.0)
+
+    c = LotteCrawler()
+    assert c.fetch_page("http://t/1") is None   # 실패 → 냉각 설정
+    start = time.monotonic()
+    assert c.fetch_page("http://t/2") == "<html>ok</html>"
+    assert time.monotonic() - start >= 0.4

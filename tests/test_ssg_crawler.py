@@ -219,3 +219,54 @@ def test_fetch_failure_triggers_cooldown(monkeypatch):
     start = time.monotonic()
     assert c.fetch_page(url) == "<html>ok</html>"
     assert time.monotonic() - start >= 0.4
+
+
+# --- 조건부 배송비 (www 새 DOM area-detail 등) ---
+# "배송비 : N원" + "M원 이상 구매 시 무료배송" 안내가 있는 경우,
+# 상품 가격이 M 이상이면 배송비 0원, 미만이면 N원으로 계산해야 한다.
+HTML_CONDITIONAL_DELIVERY = """
+<html><body>
+<div class="cdtl_new_price notranslate"><em class="ssg_price">48,545</em></div>
+<div class="area-detail" data-type="1">
+  <dl>
+    <dt>배송비 : 3,000원</dt>
+    <dd>500,000원 이상 구매 시 무료배송</dd>
+    <dt>지역별 추가 배송비</dt>
+    <dd>제주 4,000원 / 도서산간 6,000원</dd>
+  </dl>
+</div>
+</body></html>
+"""
+
+HTML_CONDITIONAL_DELIVERY_OVER = HTML_CONDITIONAL_DELIVERY.replace("48,545", "600,000")
+
+HTML_RETURN_FEE_ONLY = """
+<html><body>
+<div class="cdtl_new_price notranslate"><em class="ssg_price">48,545</em></div>
+<div class="area-detail"><dl>
+  <dt>반품배송비 : 2,500원</dt>
+  <dt>교환배송비 : 5,000원</dt>
+</dl></div>
+</body></html>
+"""
+
+
+def test_conditional_delivery_below_threshold():
+    r = SSGCrawler().extract_price(HTML_CONDITIONAL_DELIVERY, "http://t")
+    assert r["판매가"] == 48545
+    assert r["배송비"] == 3000
+    assert r["배송비 여부"] == "유료"
+    assert r["최종 가격"] == 51545
+
+
+def test_conditional_delivery_above_threshold_is_free():
+    r = SSGCrawler().extract_price(HTML_CONDITIONAL_DELIVERY_OVER, "http://t")
+    assert r["판매가"] == 600000
+    assert r["배송비"] == 0
+    assert r["배송비 여부"] == "무료"
+
+
+def test_return_exchange_fee_not_mistaken_for_delivery():
+    r = SSGCrawler().extract_price(HTML_RETURN_FEE_ONLY, "http://t")
+    assert r["배송비"] == 0
+    assert r["배송비 여부"] == "무료"

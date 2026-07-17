@@ -160,14 +160,58 @@ class SSGCrawler(BaseCrawler):
                 return price
         return None
 
-    def _extract_delivery(self, soup):
+    # 배송비 안내 텍스트가 들어있는 컨테이너 (www 새 DOM의 area-detail 포함)
+    DELIVERY_TEXT_CONTAINERS = [".area-detail", "[class*='delivery']", ".cdtl_dl"]
+
+    def _extract_delivery(self, soup, price=None):
+        fee = None
         for selector in self.DELIVERY_SELECTORS:
             elem = soup.select_one(selector)
             if elem:
                 digits = re.sub(r"[^\d]", "", elem.get_text())
-                delivery_price = int(digits) if digits else 0
-                return delivery_price, ("유료" if delivery_price > 0 else "무료")
-        return 0, "무료"
+                fee = int(digits) if digits else 0
+                break
+        if fee is None:
+            fee = self._delivery_fee_from_text(soup)
+        if fee is None:
+            return 0, "무료"
+        # "M원 이상 구매 시 무료배송" 조건: 상품 가격이 기준 이상이면 무료
+        if fee > 0 and price:
+            threshold = self._free_delivery_threshold(soup)
+            if threshold and price >= threshold:
+                return 0, "무료"
+        return fee, ("유료" if fee > 0 else "무료")
+
+    def _delivery_text_blocks(self, soup):
+        seen, blocks = set(), []
+        for selector in self.DELIVERY_TEXT_CONTAINERS:
+            try:
+                for elem in soup.select(selector):
+                    if id(elem) not in seen:
+                        seen.add(id(elem))
+                        blocks.append(elem.get_text(" ", strip=True))
+            except Exception:
+                continue
+        return blocks
+
+    def _delivery_fee_from_text(self, soup):
+        """선택자가 못 잡는 DOM(예: www 새 디자인의 '배송비 : 3,000원' 텍스트)
+        에서 배송비를 추출. 반품/교환/추가 배송비는 제외한다."""
+        for text in self._delivery_text_blocks(soup):
+            for m in re.finditer(r"([가-힣]*)\s*배송비\s*:?\s*([\d,]+)\s*원", text):
+                prefix = m.group(1)
+                if any(kw in prefix for kw in ("반품", "교환", "추가")):
+                    continue
+                return int(m.group(2).replace(",", ""))
+        return None
+
+    def _free_delivery_threshold(self, soup):
+        """'M원 이상 구매 시 무료배송' 안내의 기준 금액."""
+        for text in self._delivery_text_blocks(soup):
+            m = re.search(r"([\d,]+)\s*원\s*이상[^0-9]{0,20}무료\s*배송", text)
+            if m:
+                return int(m.group(1).replace(",", ""))
+        return None
 
     def extract_price(self, html: str, url: str) -> Dict:
         soup = BeautifulSoup(html, "lxml")
@@ -186,7 +230,9 @@ class SSGCrawler(BaseCrawler):
             logger.warning("[SSG] ❌ 가격을 찾지 못함")
             return self.build_price_result(url)
 
-        delivery_price, delivery_status = self._extract_delivery(soup)
+        delivery_price, delivery_status = self._extract_delivery(
+            soup, price=(coupon_price or sale_price)
+        )
         logger.info(
             f"[SSG] ✅ 판매가: {sale_price}, 쿠폰적용가: {coupon_price}, 배송비: {delivery_price}"
         )
