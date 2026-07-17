@@ -1,10 +1,13 @@
 """SSG 크롤러"""
 
-from crawlers.base_crawler import BaseCrawler, SkipRetryError
+from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 import re
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -53,23 +56,63 @@ class SSGCrawler(BaseCrawler):
         ".cdtl_soldout",
     ]
 
-    # www.ssg.com(본몰)은 Akamai Bot Manager가 상품 페이지를 상시 차단한다.
-    # 2026-07 실측: 파이썬 HTTP(403), 일반 Selenium headless(차단 페이지),
-    # undetected-chromedriver headless + 홈 워밍업(홈은 통과, 상품 페이지 차단)
-    # 모두 실패. HTTP가 통과하는 서브도메인(shinsegaemall/department)은 정상
-    # 수집되므로, www만 재시도 없이 명확한 오류로 즉시 기록한다.
-    BLOCKED_HOST = "www.ssg.com"
-    BLOCKED_HOST_ERROR = (
-        "SSG 본몰(www.ssg.com) 봇 차단(Akamai) — 자동 수집 불가, 브라우저에서 직접 확인 필요"
+    # www.ssg.com(본몰)·ssg.com·emart.ssg.com은 Akamai Bot Manager가 상품
+    # 페이지를 상시 차단한다 (2026-07 실측: HTTP 403, headless 브라우저 차단).
+    # 같은 itemId를 shinsegaemall.ssg.com으로 열면 차단 없이 열리고 가격도
+    # 동일함을 실측 확인 → 차단 도메인은 서브도메인으로 재작성해 HTTP 수집.
+    # 재작성 후에도 실패하면(레이트리밋 추정) 냉각 후 crawl_price 재시도를
+    # 타고, 최종 실패 시 명확한 오류로 기록한다.
+    BLOCKED_HOSTS = {"www.ssg.com", "ssg.com", "emart.ssg.com"}
+    REWRITE_HOST = "shinsegaemall.ssg.com"
+    REWRITE_FAIL_ERROR = (
+        "SSG 요청 실패(레이트리밋/봇 차단 추정) — shinsegaemall 우회 요청도 실패, 잠시 후 재실행 필요"
     )
+
+    # shinsegaemall도 짧은 시간에 요청이 몰리면 일시 차단(429)된다 (2026-07
+    # 실측: 0.7초 간격 연속 요청 시 ~17건 후 차단). 롯데와 같은 방식으로
+    # 클래스 전역 최소 요청 간격을 강제한다.
+    MIN_REQUEST_INTERVAL = 1.5  # 초
+    # 그래도 일시 차단이 걸리면(롤링 윈도우 추정) 냉각 후 재시도해야 풀린다
+    RATE_LIMIT_COOLDOWN = 20.0  # 초
+    _rate_lock = threading.Lock()
+    _last_fetch_at = 0.0
+    _cooldown_until = 0.0
 
     def __init__(self):
         super().__init__(use_selenium=False)
 
+    def _rewrite_blocked_url(self, url: str) -> str:
+        parts = urlsplit(url)
+        if parts.netloc.lower() in self.BLOCKED_HOSTS:
+            return urlunsplit(
+                ("https", self.REWRITE_HOST, parts.path, parts.query, parts.fragment)
+            )
+        return url
+
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
-        html = super().fetch_page(url, wait_time)
-        if html is None and self.BLOCKED_HOST in url.lower():
-            raise SkipRetryError(self.BLOCKED_HOST_ERROR)
+        fetch_url = self._rewrite_blocked_url(url)
+        if fetch_url != url:
+            logger.info(f"[SSG] 봇 차단 도메인 → 서브도메인 우회: {fetch_url[:70]}...")
+
+        cls = SSGCrawler
+        with cls._rate_lock:
+            now = time.monotonic()
+            wait = max(
+                cls.MIN_REQUEST_INTERVAL - (now - cls._last_fetch_at),
+                cls._cooldown_until - now,
+            )
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_fetch_at = time.monotonic()
+
+        html = super().fetch_page(fetch_url, wait_time)
+        if html is None:
+            # 일시 차단(429 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
+            with cls._rate_lock:
+                cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+            if fetch_url != url:
+                # 레이트리밋은 일시적일 수 있으므로 crawl_price의 재시도(백오프)에 맡긴다
+                raise Exception(self.REWRITE_FAIL_ERROR)
         return html
 
     def get_price_wait_selectors(self, url: str) -> List[str]:

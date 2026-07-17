@@ -1,6 +1,18 @@
 """SSG 크롤러 테스트"""
 
+import pytest
+
 from crawlers.ssg_crawler import SSGCrawler
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit(monkeypatch):
+    """전역 요청 간격/냉각이 단위 테스트를 느리게 만들거나 테스트 간에
+    새지 않도록 기본 0으로 초기화.
+    (요청 간격/냉각 자체를 검증하는 테스트는 개별적으로 값을 덮어쓴다)"""
+    monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
+    monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
 
 HTML_SALE_WITH_DELIVERY = """
 <html><body>
@@ -88,28 +100,53 @@ def test_bare_fallback_identical_markup_outside_excluded_container():
     assert r["판매가"] == 40500
 
 
-# --- www.ssg.com 봇 차단 빠른 실패 ---
-# www.ssg.com은 Akamai가 상품 페이지를 상시 차단한다 (HTTP/headless 브라우저
-# 모두 실측 차단 확인). www는 재시도 없이 명확한 오류로 즉시 기록하고,
-# HTTP가 통과하는 서브도메인은 기존 재시도 경로를 유지해야 한다.
+# --- www.ssg.com 봇 차단 → 서브도메인 우회 ---
+# www.ssg.com(및 bare ssg.com, emart.ssg.com)은 Akamai가 상품 페이지를 상시
+# 차단하지만, 같은 itemId를 shinsegaemall.ssg.com으로 열면 차단 없이 열리고
+# 가격도 동일하다 (2026-07 실측). 차단 도메인은 서브도메인으로 재작성해
+# HTTP 수집하고, 재작성 후에도 실패하면 재시도 없이 명확한 오류로 기록한다.
 
-def test_www_http_failure_fails_fast_with_clear_error(monkeypatch):
+def test_blocked_host_rewritten_to_subdomain(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
     calls = []
 
     def fake_fetch(self, url, wait_time=2):
         calls.append(url)
-        return None
+        # crawl_price의 짧은-HTML 재시도(<2000B)를 피하기 위한 패딩
+        return HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
 
     monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
-    r = SSGCrawler().crawl_price("https://www.ssg.com/item/itemView.ssg?itemId=1")
-    assert r["결과 상태"] == "error"
-    assert "봇 차단" in r["에러 발생"]
-    assert len(calls) == 1             # 재시도 없이 즉시 실패
+    r = SSGCrawler().crawl_price(
+        "https://www.ssg.com/item/itemView.ssg?itemId=1&siteNo=6004&itemSsgCollectYn=N"
+    )
+    assert calls == [
+        "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1&siteNo=6004&itemSsgCollectYn=N"
+    ]
+    assert r["결과 상태"] == "success"
+    assert r["판매가"] == 45000
+    # 결과의 상품 url은 시트 원본 그대로 유지
+    assert r["상품 url"].startswith("https://www.ssg.com/")
 
 
-def test_subdomain_http_failure_keeps_retry_path(monkeypatch):
+def test_bare_host_and_http_scheme_rewritten(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        # crawl_price의 짧은-HTML 재시도(<2000B)를 피하기 위한 패딩
+        return HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    SSGCrawler().crawl_price("http://ssg.com/item/itemView.ssg?itemId=2")
+    assert calls == ["https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=2"]
+
+
+def test_rewritten_fetch_failure_reports_clear_error_and_retries(monkeypatch):
+    """우회 요청 실패는 레이트리밋(일시적)일 수 있으므로 crawl_price의
+    재시도를 타야 하고, 최종 실패 시 명확한 메시지를 남겨야 한다."""
     from crawlers.base_crawler import BaseCrawler
 
     calls = []
@@ -120,18 +157,65 @@ def test_subdomain_http_failure_keeps_retry_path(monkeypatch):
 
     monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
     r = SSGCrawler().crawl_price(
-        "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1", max_retries=1
+        "https://www.ssg.com/item/itemView.ssg?itemId=1", max_retries=1
     )
     assert r["결과 상태"] == "error"
-    assert "봇 차단" not in r["에러 발생"]  # 일반 실패 메시지 유지
+    assert "우회 요청도 실패" in r["에러 발생"]
+    assert len(calls) == 1             # max_retries=1 → 시도 1회
 
 
-def test_www_http_success_extracts_normally(monkeypatch):
+def test_fetch_page_rate_limited(monkeypatch):
+    """shinsegaemall도 burst 요청 시 일시 차단(429)되므로 클래스 전역으로
+    요청 간 최소 간격을 강제해야 한다."""
+    import time
     from crawlers.base_crawler import BaseCrawler
 
+    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html></html>")
+    monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.3)
+    monkeypatch.setattr(SSGCrawler, "_last_fetch_at", 0.0)
+
+    a, b = SSGCrawler(), SSGCrawler()
+    start = time.monotonic()
+    a.fetch_page("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1")
+    b.fetch_page("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=2")
+    elapsed = time.monotonic() - start
+    assert elapsed >= 0.3
+
+
+def test_subdomain_url_not_rewritten(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
+    r = SSGCrawler().crawl_price(url, max_retries=1)
+    assert calls == [url]              # 재작성 없음
+    assert r["결과 상태"] == "error"
+    assert "우회" not in r["에러 발생"]   # 일반 실패 메시지 유지
+
+
+def test_fetch_failure_triggers_cooldown(monkeypatch):
+    """요청 실패(일시 차단 추정) 후 다음 요청은 냉각 시간이 지난 뒤에
+    나가야 한다."""
+    import time
+    from crawlers.base_crawler import BaseCrawler
+
+    results = [None, "<html>ok</html>"]
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: HTML_SALE_WITH_DELIVERY
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
     )
-    r = SSGCrawler().crawl_price("https://www.ssg.com/item/itemView.ssg?itemId=1")
-    assert r["결과 상태"] == "success"
-    assert r["판매가"] == 45000
+    monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.4)
+    monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
+
+    c = SSGCrawler()
+    url = "https://www.ssg.com/item/itemView.ssg?itemId=1"
+    with pytest.raises(Exception, match="우회 요청도 실패"):
+        c.fetch_page(url)
+    start = time.monotonic()
+    assert c.fetch_page(url) == "<html>ok</html>"
+    assert time.monotonic() - start >= 0.4
