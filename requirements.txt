@@ -45,3 +45,7 @@ python-dateutil==2.8.2
 
 # 테스트
 pytest==8.2.2
+
+# CJ 크롤링: Camoufox(위장 Firefox) headless — 서버 headless Chrome 봇 차단 대체
+# 설치 후 1회 `scrapling install` 실행 필요 (Camoufox 브라우저 다운로드)
+scrapling[fetchers]>=0.4,<0.5

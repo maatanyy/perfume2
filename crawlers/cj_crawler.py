@@ -2,15 +2,16 @@
 
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
-from typing import Dict, List
+from typing import Dict, List, Optional
 import re
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 
 class CJCrawler(BaseCrawler):
-    """CJ온스타일 크롤러 (Selenium) - 판매가/쿠폰적용가 분리"""
+    """CJ온스타일 크롤러 (scrapling Camoufox) - 판매가/쿠폰적용가 분리"""
 
     SALE_PRICE_SELECTORS = [
         ".item_price strong.ff_price",
@@ -37,8 +38,17 @@ class CJCrawler(BaseCrawler):
         ".soldout_layer .txt",
     ]
 
+    # CJ 상품 페이지는 SPA라 정적 HTML에 가격이 없고(2026-07 실측), headless
+    # Chrome(Selenium)은 서버에서 봇 감지로 빈 페이지를 받는다. Camoufox
+    # (위장 Firefox, scrapling StealthySession)는 headless로도 감지를 통과해
+    # 가격이 렌더된 HTML을 받음을 실측 확인 → 브라우저 방식을 이것으로 교체.
+    # Camoufox 브라우저 1개를 클래스 전역으로 공유하고 fetch를 락으로 직렬화.
+    FETCH_TIMEOUT_MS = 30_000
+    _stealthy_session = None
+    _stealthy_lock = threading.Lock()
+
     def __init__(self):
-        super().__init__(use_selenium=True)
+        super().__init__(use_selenium=False)
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return [
@@ -50,6 +60,49 @@ class CJCrawler(BaseCrawler):
 
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS
+
+    @classmethod
+    def _create_stealthy_session(cls):
+        # scrapling은 무거운 선택 의존성이라 실제 사용 시점에만 import
+        from scrapling.fetchers import StealthySession
+
+        session = StealthySession(headless=True, timeout=cls.FETCH_TIMEOUT_MS)
+        session.start()
+        return session
+
+    def _wait_selector(self) -> str:
+        # 가격 또는 품절 표시 중 먼저 나타나는 쪽까지 대기 (union CSS).
+        # 품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃까지 지연됨.
+        return ", ".join(self.get_price_wait_selectors("") + self.SOLD_OUT_SELECTORS)
+
+    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        cls = CJCrawler
+        with cls._stealthy_lock:
+            try:
+                if cls._stealthy_session is None:
+                    logger.info("[CJ] Camoufox 세션 생성 중...")
+                    cls._stealthy_session = cls._create_stealthy_session()
+                page = cls._stealthy_session.fetch(
+                    url, wait_selector=self._wait_selector()
+                )
+            except Exception as e:
+                logger.warning(f"[CJ] 요청 실패, 브라우저 세션 재생성 예정: {e}")
+                if cls._stealthy_session is not None:
+                    try:
+                        cls._stealthy_session.close()
+                    except Exception:
+                        pass
+                    cls._stealthy_session = None
+                return None
+        if page.status != 200:
+            logger.warning(f"[CJ] HTTP {page.status}: {url[:60]}")
+            return None
+        return page.html_content
+
+    # 주의: _close_driver를 오버라이드해 공유 세션을 닫으면 안 된다 —
+    # 엔진이 스레드별 크롤러 인스턴스를 쓰므로 한 인스턴스의 정리(__del__ 포함)가
+    # 다른 스레드가 쓰는 브라우저를 죽인다. Camoufox 세션은 프로세스 수명 동안
+    # 유지한다 (요청 실패 시 fetch_page 안에서만 재생성).
 
     def _extract_delivery(self, soup):
         for selector in self.DELIVERY_SELECTORS:

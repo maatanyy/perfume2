@@ -51,8 +51,23 @@ class LotteCrawler(BaseCrawler):
     _last_fetch_at = 0.0
     _cooldown_until = 0.0
 
+    # 쿠키 없이 상품 URL로 직행하는 패턴이 403 차단 대상이다 (2026-07 실측:
+    # 메인 페이지 방문으로 쿠키 ~10개 수신 후에는 같은 세션의 상품 요청이
+    # 모두 통과). 첫 요청 전에 메인을 한 번 방문해 세션 쿠키를 받는다.
+    WARMUP_URL = "https://www.lotteimall.com/main/viewMain.lotte"
+
     def __init__(self):
         super().__init__(use_selenium=False)
+        self._warmed = False
+
+    def _warm_up(self):
+        try:
+            self.session.get(self.WARMUP_URL, timeout=15)
+        except Exception as e:
+            # 워밍업 실패는 무시하고 본 요청 진행 (본 요청이 차단되면
+            # 냉각 + 재워밍업 경로를 탄다)
+            logger.debug(f"[롯데] 메인 워밍업 실패(무시): {e}")
+        self._warmed = True
 
     def fetch_page(self, url: str, wait_time: int = 2):
         cls = LotteCrawler
@@ -65,11 +80,15 @@ class LotteCrawler(BaseCrawler):
             if wait > 0:
                 time.sleep(wait)
             cls._last_fetch_at = time.monotonic()
+        if not self._warmed:
+            self._warm_up()
         html = super().fetch_page(url, wait_time)
         if html is None:
             # 일시 차단(403 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
             with cls._rate_lock:
                 cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+            # 쿠키가 차단 상태로 오염됐을 수 있으므로 다음 요청 전 재워밍업
+            self._warmed = False
         return html
 
     def get_price_wait_selectors(self, url: str) -> List[str]:

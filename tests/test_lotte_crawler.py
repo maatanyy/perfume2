@@ -67,6 +67,85 @@ def test_not_found():
     assert r["결과 상태"] == "not_found"
 
 
+class _RecordingSession:
+    """세션 호출 기록용 스텁 (requests.Session 대체)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+
+        class _Resp:
+            text = "<html>main</html>"
+
+            def raise_for_status(self):
+                pass
+
+        return _Resp()
+
+
+def test_fetch_warms_up_main_page_once(monkeypatch):
+    """상품 URL 직행은 쿠키 없음 패턴으로 403 차단된다 (2026-07 실측:
+    메인 페이지 방문으로 쿠키 수신 후 같은 세션은 통과). 첫 요청 전에
+    메인 페이지 워밍업이 정확히 1회 수행되어야 한다."""
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html>ok</html>"
+    )
+    monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_cooldown_until", 0.0)
+
+    c = LotteCrawler()
+    c.session = _RecordingSession()
+    c.fetch_page("http://t/1")
+    c.fetch_page("http://t/2")
+    assert c.session.calls == [LotteCrawler.WARMUP_URL]
+
+
+def test_fetch_failure_resets_warmup(monkeypatch):
+    """요청 실패(403 추정) 후에는 쿠키가 오염됐을 수 있으므로 다음
+    요청 전에 다시 워밍업해야 한다."""
+    from crawlers.base_crawler import BaseCrawler
+
+    results = [None, "<html>ok</html>"]
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
+    )
+    monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(LotteCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_cooldown_until", 0.0)
+
+    c = LotteCrawler()
+    c.session = _RecordingSession()
+    assert c.fetch_page("http://t/1") is None       # 워밍업 1회 + 실패
+    assert c.fetch_page("http://t/1") == "<html>ok</html>"  # 재워밍업 후 성공
+    assert c.session.calls == [LotteCrawler.WARMUP_URL, LotteCrawler.WARMUP_URL]
+
+
+def test_warmup_failure_does_not_block_fetch(monkeypatch):
+    """워밍업 요청 자체가 실패해도 본 요청은 그대로 진행되어야 한다."""
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html>ok</html>"
+    )
+    monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
+    monkeypatch.setattr(LotteCrawler, "_cooldown_until", 0.0)
+
+    class _FailingSession:
+        def get(self, url, **kwargs):
+            raise RuntimeError("connection error")
+
+    c = LotteCrawler()
+    c.session = _FailingSession()
+    assert c.fetch_page("http://t/1") == "<html>ok</html>"
+
+
 def test_fetch_page_rate_limited(monkeypatch):
     """롯데는 동시 burst 시 안티봇 403이 발생하므로, 인스턴스/스레드와
     무관하게 클래스 전역으로 요청 간 최소 간격을 강제해야 한다."""
@@ -78,6 +157,7 @@ def test_fetch_page_rate_limited(monkeypatch):
     monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
 
     a, b = LotteCrawler(), LotteCrawler()
+    a.session, b.session = _RecordingSession(), _RecordingSession()
     start = time.monotonic()
     a.fetch_page("http://t/1")
     b.fetch_page("http://t/2")
@@ -101,6 +181,7 @@ def test_fetch_failure_triggers_cooldown(monkeypatch):
     monkeypatch.setattr(LotteCrawler, "_cooldown_until", 0.0)
 
     c = LotteCrawler()
+    c.session = _RecordingSession()
     assert c.fetch_page("http://t/1") is None   # 실패 → 냉각 설정
     start = time.monotonic()
     assert c.fetch_page("http://t/2") == "<html>ok</html>"
