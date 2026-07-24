@@ -96,8 +96,15 @@ def test_fetch_page_returns_rendered_html(monkeypatch):
     assert url == "http://t/item/1"
     # 가격 또는 품절 요소 중 먼저 나타나는 쪽까지 대기해야 한다
     # (품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃)
-    assert ".ff_price" in kwargs["wait_selector"]
-    assert ".btn_soldout" in kwargs["wait_selector"]
+    parts = kwargs["wait_selector"].split(", ")
+    assert ".item_price strong.ff_price" in parts
+    # 변형 DOM(가격이 .price_area 아래에만 있는 페이지)도 빠르게 매칭되도록
+    assert ".price_area .price_txt > strong.ff_price" in parts
+    assert ".btn_soldout" in parts
+    # bare '.ff_price'는 SPA 셸에 빈 스켈레톤으로 존재해 렌더 전에 매칭됨
+    # (2026-07 실측: 간헐적으로 가격 없는 HTML이 반환되어 not_found 오탐)
+    # → 대기 조건에서는 제외해야 한다
+    assert ".ff_price" not in parts
 
 
 def test_session_created_once_and_shared(monkeypatch):

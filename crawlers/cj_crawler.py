@@ -43,7 +43,11 @@ class CJCrawler(BaseCrawler):
     # (위장 Firefox, scrapling StealthySession)는 headless로도 감지를 통과해
     # 가격이 렌더된 HTML을 받음을 실측 확인 → 브라우저 방식을 이것으로 교체.
     # Camoufox 브라우저 1개를 클래스 전역으로 공유하고 fetch를 락으로 직렬화.
-    FETCH_TIMEOUT_MS = 30_000
+    # 15초/내부재시도 1회: 없는 상품 URL은 CJ 메인으로 리다이렉트되어 대기
+    # 선택자가 영원히 안 나타난다. 기본값(30초×3회)이면 건당 ~90초 + 세션
+    # 파괴 예외까지 발생(2026-07 실측) → 15초 후 정상 반환되도록 제한.
+    FETCH_TIMEOUT_MS = 15_000
+    FETCH_RETRIES = 1
     _stealthy_session = None
     _stealthy_lock = threading.Lock()
 
@@ -56,6 +60,8 @@ class CJCrawler(BaseCrawler):
             ".ff_price",
             ".txt_price .ff_price",
             ".total_price_wrap strong.ff_price",
+            # 변형 DOM: 가격이 .price_area 아래에만 있는 페이지 (2026-07 실측)
+            ".price_area .price_txt > strong.ff_price",
         ]
 
     def get_sold_out_selectors(self) -> List[str]:
@@ -66,14 +72,20 @@ class CJCrawler(BaseCrawler):
         # scrapling은 무거운 선택 의존성이라 실제 사용 시점에만 import
         from scrapling.fetchers import StealthySession
 
-        session = StealthySession(headless=True, timeout=cls.FETCH_TIMEOUT_MS)
+        session = StealthySession(
+            headless=True, timeout=cls.FETCH_TIMEOUT_MS, retries=cls.FETCH_RETRIES
+        )
         session.start()
         return session
 
     def _wait_selector(self) -> str:
         # 가격 또는 품절 표시 중 먼저 나타나는 쪽까지 대기 (union CSS).
         # 품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃까지 지연됨.
-        return ", ".join(self.get_price_wait_selectors("") + self.SOLD_OUT_SELECTORS)
+        # bare '.ff_price'는 SPA 셸에 빈 스켈레톤으로 존재해 렌더 전에 매칭
+        # → 간헐적으로 가격 없는 HTML이 반환(not_found 오탐)되므로 대기
+        # 조건에서 제외한다 (추출 fallback으로는 계속 사용).
+        selectors = [s for s in self.get_price_wait_selectors("") if s != ".ff_price"]
+        return ", ".join(selectors + self.SOLD_OUT_SELECTORS)
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
         cls = CJCrawler
