@@ -361,6 +361,10 @@ class CrawlingEngineV2:
                 if i + batch_size < len(products):
                     time.sleep(0.1)
 
+            # 일시 차단 등으로 error가 된 URL 재시도 (취소된 잡은 건너뜀)
+            if not self.job_cancelled.get(job_id, False):
+                self._retry_failed_prices(job_id, results, stats)
+
             # 결과 저장
             result_file = self._save_results(job_id, results, job.site_name)
             if result_file:
@@ -492,6 +496,55 @@ class CrawlingEngineV2:
             pass
 
         return batch_results
+
+    def _retry_failed_prices(self, job_id: int, results: List[Dict], stats: JobStats):
+        """error 상태 URL을 잡 말미에 한 번 더 시도한다.
+
+        실전(2026-07-25): 롯데 45건이 크롤링 도중 일시 403으로 error였지만
+        시간이 지나 재시도하면 전부 성공 — 잡이 끝나기 전에 회복시킨다.
+        순차 실행이라 사이트별 요청 간격/냉각을 자연스럽게 존중한다.
+        """
+        from crawlers import crawler_factory
+
+        targets = []
+        for result in results:
+            for entry in result.get("prices", []):
+                if entry.get("결과 상태") == "error" and entry.get("상품 url"):
+                    targets.append(entry)
+        if not targets:
+            return
+
+        self._add_log(job_id, "INFO", f"오류 {len(targets)}건 재시도 패스 시작")
+        recovered = 0
+        for entry in targets:
+            if self.job_cancelled.get(job_id, False):
+                break
+            url = entry["상품 url"]
+            try:
+                crawler = crawler_factory.get_crawler_by_url(url)
+                if crawler is None:
+                    continue
+                data = crawler.crawl_price(url)
+            except Exception as e:
+                logger.debug(f"재시도 실패 {url[:60]}: {e}")
+                continue
+            new_status = data.get("결과 상태", "error")
+            if new_status == "error":
+                continue
+            seller = entry.get("seller")
+            entry.clear()
+            entry.update({"seller": seller, **data, "결과 상태": new_status})
+            stats.error_count = max(0, stats.error_count - 1)
+            if new_status == "success":
+                stats.success_count += 1
+            elif new_status == "sold_out":
+                stats.sold_out_count += 1
+            else:
+                stats.not_found_count += 1
+            recovered += 1
+        self._add_log(
+            job_id, "INFO", f"재시도 패스 완료: {recovered}/{len(targets)}건 회복"
+        )
 
     def _update_job_progress(self, job_id: int, stats: JobStats):
         """DB 진행률 업데이트"""
