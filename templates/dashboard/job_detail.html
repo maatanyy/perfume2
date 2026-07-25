@@ -30,6 +30,8 @@
                     <dd class="col-sm-9">{{ job.started_at.strftime('%Y-%m-%d %H:%M:%S KST') if job.started_at else '-' }}</dd>
                     <dt class="col-sm-3">완료 시간</dt>
                     <dd class="col-sm-9">{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S KST') if job.completed_at else '-' }}</dd>
+                    <dt class="col-sm-3">소요시간</dt>
+                    <dd class="col-sm-9">{{ job.duration_display or '-' }}</dd>
                     {% if job.error_message %}
                     <dt class="col-sm-3">에러 메시지</dt>
                     <dd class="col-sm-9 text-danger">{{ job.error_message }}</dd>

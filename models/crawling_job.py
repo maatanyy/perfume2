@@ -85,5 +85,21 @@ class CrawlingJob(db.Model):
         self.updated_at = get_kst_now()
         db.session.commit()
 
+    @property
+    def duration_display(self):
+        """소요시간 표시 문자열 (예: '1시간 5분', '32분 15초', '42초')"""
+        if not self.started_at or not self.completed_at:
+            return ""
+        total = int((self.completed_at - self.started_at).total_seconds())
+        if total < 0:
+            return ""
+        hours, rem = divmod(total, 3600)
+        minutes, seconds = divmod(rem, 60)
+        if hours:
+            return f"{hours}시간 {minutes}분"
+        if minutes:
+            return f"{minutes}분 {seconds}초"
+        return f"{seconds}초"
+
     def __repr__(self):
         return f"<CrawlingJob {self.id}: {self.site_name} - {self.status}>"
