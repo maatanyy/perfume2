@@ -2,6 +2,7 @@
 
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 import re
 import logging
@@ -50,6 +51,14 @@ class CJCrawler(BaseCrawler):
     FETCH_RETRIES = 1
     _stealthy_session = None
     _stealthy_lock = threading.Lock()
+    # StealthySession은 Playwright 기반이라 브라우저를 시작한 스레드에서만
+    # 조작할 수 있다. 엔진 워커 스레드들이 번갈아 호출하면 스레드가 바뀔
+    # 때마다 예외 → 브라우저 재생성 반복 → 못 닫은 좀비 브라우저 누적으로
+    # 메모리 고갈(2026-07 서버 실측: 7개). 세션 생성·fetch·close 전부를
+    # 아래 1-스레드 실행기에서만 수행해 브라우저를 한 스레드에 고정한다.
+    _fetch_executor = None
+    # 브라우저 자체 제한(15초×재시도 1회)보다 넉넉한 안전망 — 초과 시 행 방지
+    FETCH_RESULT_TIMEOUT_S = 90
 
     def __init__(self):
         super().__init__(use_selenium=False)
@@ -87,25 +96,42 @@ class CJCrawler(BaseCrawler):
         selectors = [s for s in self.get_price_wait_selectors("") if s != ".ff_price"]
         return ", ".join(selectors + self.SOLD_OUT_SELECTORS)
 
-    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
-        cls = CJCrawler
+    @classmethod
+    def _get_fetch_executor(cls) -> ThreadPoolExecutor:
         with cls._stealthy_lock:
-            try:
-                if cls._stealthy_session is None:
-                    logger.info("[CJ] Camoufox 세션 생성 중...")
-                    cls._stealthy_session = cls._create_stealthy_session()
-                page = cls._stealthy_session.fetch(
-                    url, wait_selector=self._wait_selector()
+            if cls._fetch_executor is None:
+                cls._fetch_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="cj-browser"
                 )
-            except Exception as e:
-                logger.warning(f"[CJ] 요청 실패, 브라우저 세션 재생성 예정: {e}")
-                if cls._stealthy_session is not None:
-                    try:
-                        cls._stealthy_session.close()
-                    except Exception:
-                        pass
-                    cls._stealthy_session = None
-                return None
+            return cls._fetch_executor
+
+    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        future = self._get_fetch_executor().submit(self._fetch_in_browser_thread, url)
+        try:
+            return future.result(timeout=self.FETCH_RESULT_TIMEOUT_S)
+        except Exception as e:
+            logger.warning(f"[CJ] 브라우저 스레드 응답 없음/실패: {e}")
+            return None
+
+    def _fetch_in_browser_thread(self, url: str) -> Optional[str]:
+        # 전용 스레드(_fetch_executor) 안에서만 실행된다 — 직접 호출 금지.
+        cls = CJCrawler
+        try:
+            if cls._stealthy_session is None:
+                logger.info("[CJ] 스텔스 브라우저 세션 생성 중...")
+                cls._stealthy_session = cls._create_stealthy_session()
+            page = cls._stealthy_session.fetch(
+                url, wait_selector=self._wait_selector()
+            )
+        except Exception as e:
+            logger.warning(f"[CJ] 요청 실패, 브라우저 세션 재생성 예정: {e}")
+            if cls._stealthy_session is not None:
+                try:
+                    cls._stealthy_session.close()
+                except Exception:
+                    pass
+                cls._stealthy_session = None
+            return None
         if page.status != 200:
             logger.warning(f"[CJ] HTTP {page.status}: {url[:60]}")
             return None

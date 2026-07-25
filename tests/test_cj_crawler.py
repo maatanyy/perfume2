@@ -134,6 +134,44 @@ def test_fetch_error_returns_none_and_resets_session(monkeypatch):
     assert CJCrawler._stealthy_session is None  # 다음 요청에서 재생성
 
 
+def test_fetch_runs_on_single_dedicated_thread(monkeypatch):
+    """StealthySession은 Playwright 기반이라 브라우저를 시작한 스레드에서만
+    조작할 수 있다. 서버(2026-07 실측)에서는 엔진 워커 스레드들이 번갈아
+    fetch_page를 호출 → 스레드가 바뀔 때마다 예외 → 브라우저 재생성 반복 →
+    못 닫은 좀비 브라우저 7개 누적으로 메모리 고갈. 따라서 어느 스레드가
+    호출하든 세션 생성과 fetch는 전용 스레드 1개에서만 실행되어야 한다."""
+    import threading as th
+
+    create_threads = []
+    fetch_threads = []
+
+    class _ThreadRecordingSession(_FakeStealthySession):
+        def fetch(self, url, **kwargs):
+            fetch_threads.append(th.get_ident())
+            return super().fetch(url, **kwargs)
+
+    def _create(cls):
+        create_threads.append(th.get_ident())
+        return _ThreadRecordingSession()
+
+    monkeypatch.setattr(CJCrawler, "_create_stealthy_session", classmethod(_create))
+
+    caller_threads = []
+
+    def _call():
+        caller_threads.append(th.get_ident())
+        assert CJCrawler().fetch_page("http://t/1") == "<html>rendered</html>"
+
+    for _ in range(2):
+        t = th.Thread(target=_call)
+        t.start()
+        t.join()
+
+    assert len(set(fetch_threads)) == 1  # 브라우저 조작은 항상 같은 스레드
+    assert set(create_threads) == set(fetch_threads)  # 세션 생성도 같은 스레드
+    assert set(fetch_threads).isdisjoint(caller_threads)  # 호출자 스레드가 아님
+
+
 def test_fetch_non_200_returns_none_keeps_session(monkeypatch):
     fake = _FakeStealthySession(pages=[_FakePage(status=403, html="blocked")])
     monkeypatch.setattr(CJCrawler, "_create_stealthy_session", classmethod(lambda cls: fake))
