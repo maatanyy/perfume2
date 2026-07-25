@@ -38,6 +38,10 @@ class CJCrawler(BaseCrawler):
         ".btn_soldout",
         ".soldout_layer .txt",
     ]
+    # 판매종료/삭제 상품 URL은 CJ가 메인 페이지로 클라이언트 리다이렉트한다.
+    # #main_cont는 메인에만 있고 상품 페이지에는 없다 (2026-07 실측) —
+    # 대기 조건에 포함해 리다이렉트를 15초 타임아웃 대신 ~2초에 감지한다.
+    MAIN_REDIRECT_SELECTOR = "#main_cont"
 
     # CJ 상품 페이지는 SPA라 정적 HTML에 가격이 없고(2026-07 실측), headless
     # Chrome(Selenium)은 서버에서 봇 감지로 빈 페이지를 받는다. Camoufox
@@ -94,7 +98,9 @@ class CJCrawler(BaseCrawler):
         # → 간헐적으로 가격 없는 HTML이 반환(not_found 오탐)되므로 대기
         # 조건에서 제외한다 (추출 fallback으로는 계속 사용).
         selectors = [s for s in self.get_price_wait_selectors("") if s != ".ff_price"]
-        return ", ".join(selectors + self.SOLD_OUT_SELECTORS)
+        return ", ".join(
+            selectors + self.SOLD_OUT_SELECTORS + [self.MAIN_REDIRECT_SELECTOR]
+        )
 
     @classmethod
     def _get_fetch_executor(cls) -> ThreadPoolExecutor:
@@ -164,6 +170,12 @@ class CJCrawler(BaseCrawler):
                 return self.build_price_result(
                     url, delivery_price=None, delivery_status="매진/품절",
                     status="sold_out", error="페이지에서 품절 표시 감지",
+                )
+            if soup.select_one(self.MAIN_REDIRECT_SELECTOR):
+                logger.info("[CJ] 메인 리다이렉트 감지 — 판매종료/삭제 상품 추정")
+                return self.build_price_result(
+                    url, status="not_found",
+                    error="CJ 메인으로 리다이렉트됨 (판매종료/삭제 상품 추정)",
                 )
             logger.warning("[CJ] ❌ 가격을 찾지 못함")
             return self.build_price_result(url)

@@ -30,6 +30,21 @@ HTML_SOLD_OUT = """
 <html><body><button class="btn_soldout">품절</button></body></html>
 """
 
+# 판매종료/삭제 상품 URL은 CJ가 메인 페이지로 클라이언트 리다이렉트한다
+# (2026-07 실측: title '홈 | CJ온스타일', #main_cont는 메인에만 존재).
+HTML_MAIN_REDIRECT = """
+<html><head><title>홈 | CJ온스타일</title></head>
+<body><div id="main_cont">메인 콘텐츠</div></body></html>
+"""
+
+
+def test_main_redirect_detected_as_discontinued():
+    """메인 리다이렉트 페이지는 not_found로 분류하되, 비고(에러)에
+    판매종료 추정임을 남겨 사용자가 URL 목록을 정리할 수 있게 한다."""
+    r = CJCrawler().extract_price(HTML_MAIN_REDIRECT, "http://t")
+    assert r["결과 상태"] == "not_found"
+    assert "판매종료" in r["에러 발생"]
+
 
 def test_sale_and_coupon_split():
     r = CJCrawler().extract_price(HTML_SALE_AND_COUPON, "http://t")
@@ -101,6 +116,10 @@ def test_fetch_page_returns_rendered_html(monkeypatch):
     # 변형 DOM(가격이 .price_area 아래에만 있는 페이지)도 빠르게 매칭되도록
     assert ".price_area .price_txt > strong.ff_price" in parts
     assert ".btn_soldout" in parts
+    # 판매종료 상품은 메인으로 리다이렉트되어 가격/품절 요소가 영원히 안
+    # 나타난다 — 메인 전용 요소(#main_cont)도 기다려야 15초 타임아웃 대신
+    # 리다이렉트 직후(~2초) 바로 not_found로 분류된다 (2026-07 실측)
+    assert "#main_cont" in parts
     # bare '.ff_price'는 SPA 셸에 빈 스켈레톤으로 존재해 렌더 전에 매칭됨
     # (2026-07 실측: 간헐적으로 가격 없는 HTML이 반환되어 not_found 오탐)
     # → 대기 조건에서는 제외해야 한다
