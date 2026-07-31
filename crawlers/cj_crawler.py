@@ -42,6 +42,12 @@ class CJCrawler(BaseCrawler):
     # #main_cont는 메인에만 있고 상품 페이지에는 없다 (2026-07 실측) —
     # 대기 조건에 포함해 리다이렉트를 15초 타임아웃 대신 ~2초에 감지한다.
     MAIN_REDIRECT_SELECTOR = "#main_cont"
+    # 배송비 영역은 가격보다 0.01~0.35초 늦게 렌더된다 (2026-07-31 실측).
+    # 가격 출현 즉시 HTML을 캡처하면 그 틈에 배송비가 간헐적으로 누락되어
+    # 같은 상품의 배송비/최종가격이 실행마다 달라짐 → 가격이 뜬 뒤 배송비
+    # 영역을 짧게 추가 대기한다. cap은 영역이 아예 없는 DOM 변형 대비.
+    DELIVERY_WAIT_SELECTOR = ".gift_delivery_wrap, .delivery_fees"
+    DELIVERY_WAIT_TIMEOUT_MS = 3_000
 
     # CJ 상품 페이지는 SPA라 정적 HTML에 가격이 없고(2026-07 실측), headless
     # Chrome(Selenium)은 서버에서 봇 감지로 빈 페이지를 받는다. Camoufox
@@ -91,16 +97,41 @@ class CJCrawler(BaseCrawler):
         session.start()
         return session
 
-    def _wait_selector(self) -> str:
-        # 가격 또는 품절 표시 중 먼저 나타나는 쪽까지 대기 (union CSS).
-        # 품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃까지 지연됨.
+    def _price_wait_union(self) -> str:
         # bare '.ff_price'는 SPA 셸에 빈 스켈레톤으로 존재해 렌더 전에 매칭
         # → 간헐적으로 가격 없는 HTML이 반환(not_found 오탐)되므로 대기
         # 조건에서 제외한다 (추출 fallback으로는 계속 사용).
-        selectors = [s for s in self.get_price_wait_selectors("") if s != ".ff_price"]
         return ", ".join(
-            selectors + self.SOLD_OUT_SELECTORS + [self.MAIN_REDIRECT_SELECTOR]
+            s for s in self.get_price_wait_selectors("") if s != ".ff_price"
         )
+
+    def _wait_selector(self) -> str:
+        # 가격 또는 품절 표시 중 먼저 나타나는 쪽까지 대기 (union CSS).
+        # 품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃까지 지연됨.
+        return ", ".join(
+            [self._price_wait_union()]
+            + self.SOLD_OUT_SELECTORS
+            + [self.MAIN_REDIRECT_SELECTOR]
+        )
+
+    def _page_action(self, page):
+        # scrapling fetch의 wait_selector 대신 여기서 대기한다 — 둘을 같이
+        # 쓰면 선택자가 영원히 안 나타나는 페이지에서 대기가 2번(2배) 걸림.
+        try:
+            page.locator(self._wait_selector()).first.wait_for(
+                state="attached", timeout=self.FETCH_TIMEOUT_MS
+            )
+        except Exception:
+            return page  # 타임아웃 — 현재 DOM 그대로 캡처
+        try:
+            if page.locator(self._price_wait_union()).count() > 0:
+                # 품절/메인 리다이렉트가 아닌 상품 페이지 — 배송비 영역 추가 대기
+                page.locator(self.DELIVERY_WAIT_SELECTOR).first.wait_for(
+                    state="attached", timeout=self.DELIVERY_WAIT_TIMEOUT_MS
+                )
+        except Exception:
+            pass
+        return page
 
     @classmethod
     def _get_fetch_executor(cls) -> ThreadPoolExecutor:
@@ -126,9 +157,7 @@ class CJCrawler(BaseCrawler):
             if cls._stealthy_session is None:
                 logger.info("[CJ] 스텔스 브라우저 세션 생성 중...")
                 cls._stealthy_session = cls._create_stealthy_session()
-            page = cls._stealthy_session.fetch(
-                url, wait_selector=self._wait_selector()
-            )
+            page = cls._stealthy_session.fetch(url, page_action=self._page_action)
         except Exception as e:
             logger.warning(f"[CJ] 요청 실패, 브라우저 세션 재생성 예정: {e}")
             if cls._stealthy_session is not None:

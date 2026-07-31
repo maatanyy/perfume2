@@ -78,8 +78,44 @@ class SSGCrawler(BaseCrawler):
     _last_fetch_at = 0.0
     _cooldown_until = 0.0
 
+    # 2026-07-31: SSG가 python-requests의 TLS 지문(JA3)을 첫 요청부터 403으로
+    # 차단하기 시작 (shinsegaemall 포함 전 서브도메인 실측). curl_cffi의
+    # chrome 위장으로는 동일 페이지가 200으로 열림을 실측 확인 → HTTP 수집을
+    # curl_cffi(impersonate="chrome")로 전환. 세션은 쿠키(ak_bmsc 등) 누적을
+    # 위해 클래스 전역으로 재사용하고, curl_cffi 세션의 스레드 안전성이
+    # 보장되지 않아 실제 요청은 락으로 직렬화한다 (요청 간격 1.5초 강제로
+    # 어차피 병렬 이득이 없음).
+    _http_session = None
+    _http_lock = threading.Lock()
+    HTTP_TIMEOUT = 30  # 초
+
     def __init__(self):
         super().__init__(use_selenium=False)
+
+    @classmethod
+    def _get_http_session(cls):
+        if cls._http_session is None:
+            # curl_cffi는 scrapling[fetchers]의 의존성 — 사용 시점에만 import
+            from curl_cffi import requests as curl_requests
+
+            cls._http_session = curl_requests.Session(impersonate="chrome")
+        return cls._http_session
+
+    def _http_get(self, url: str) -> Optional[str]:
+        try:
+            with SSGCrawler._http_lock:
+                response = self._get_http_session().get(
+                    url,
+                    timeout=self.HTTP_TIMEOUT,
+                    headers={"Accept-Language": "ko-KR,ko;q=0.9"},
+                )
+            if response.status_code != 200:
+                logger.warning(f"[SSG] HTTP {response.status_code}: {url[:60]}")
+                return None
+            return response.text
+        except Exception as e:
+            logger.warning(f"[SSG] 요청 실패: {e}")
+            return None
 
     def _rewrite_blocked_url(self, url: str) -> str:
         parts = urlsplit(url)
@@ -105,7 +141,7 @@ class SSGCrawler(BaseCrawler):
                 time.sleep(wait)
             cls._last_fetch_at = time.monotonic()
 
-        html = super().fetch_page(fetch_url, wait_time)
+        html = self._http_get(fetch_url)
         if html is None:
             # 일시 차단(429 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
             with cls._rate_lock:

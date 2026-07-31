@@ -107,16 +107,14 @@ def test_bare_fallback_identical_markup_outside_excluded_container():
 # HTTP 수집하고, 재작성 후에도 실패하면 재시도 없이 명확한 오류로 기록한다.
 
 def test_blocked_host_rewritten_to_subdomain(monkeypatch):
-    from crawlers.base_crawler import BaseCrawler
-
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_get(self, url):
         calls.append(url)
         # crawl_price의 짧은-HTML 재시도(<2000B)를 피하기 위한 패딩
         return HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    monkeypatch.setattr(SSGCrawler, "_http_get", fake_get)
     r = SSGCrawler().crawl_price(
         "https://www.ssg.com/item/itemView.ssg?itemId=1&siteNo=6004&itemSsgCollectYn=N"
     )
@@ -130,16 +128,14 @@ def test_blocked_host_rewritten_to_subdomain(monkeypatch):
 
 
 def test_bare_host_and_http_scheme_rewritten(monkeypatch):
-    from crawlers.base_crawler import BaseCrawler
-
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_get(self, url):
         calls.append(url)
         # crawl_price의 짧은-HTML 재시도(<2000B)를 피하기 위한 패딩
         return HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    monkeypatch.setattr(SSGCrawler, "_http_get", fake_get)
     SSGCrawler().crawl_price("http://ssg.com/item/itemView.ssg?itemId=2")
     assert calls == ["https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=2"]
 
@@ -147,15 +143,13 @@ def test_bare_host_and_http_scheme_rewritten(monkeypatch):
 def test_rewritten_fetch_failure_reports_clear_error_and_retries(monkeypatch):
     """우회 요청 실패는 레이트리밋(일시적)일 수 있으므로 crawl_price의
     재시도를 타야 하고, 최종 실패 시 명확한 메시지를 남겨야 한다."""
-    from crawlers.base_crawler import BaseCrawler
-
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_get(self, url):
         calls.append(url)
         return None
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    monkeypatch.setattr(SSGCrawler, "_http_get", fake_get)
     r = SSGCrawler().crawl_price(
         "https://www.ssg.com/item/itemView.ssg?itemId=1", max_retries=1
     )
@@ -168,9 +162,8 @@ def test_fetch_page_rate_limited(monkeypatch):
     """shinsegaemall도 burst 요청 시 일시 차단(429)되므로 클래스 전역으로
     요청 간 최소 간격을 강제해야 한다."""
     import time
-    from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html></html>")
+    monkeypatch.setattr(SSGCrawler, "_http_get", lambda self, url: "<html></html>")
     monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.3)
     monkeypatch.setattr(SSGCrawler, "_last_fetch_at", 0.0)
 
@@ -183,15 +176,13 @@ def test_fetch_page_rate_limited(monkeypatch):
 
 
 def test_subdomain_url_not_rewritten(monkeypatch):
-    from crawlers.base_crawler import BaseCrawler
-
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_get(self, url):
         calls.append(url)
         return None
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    monkeypatch.setattr(SSGCrawler, "_http_get", fake_get)
     url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
     r = SSGCrawler().crawl_price(url, max_retries=1)
     assert calls == [url]              # 재작성 없음
@@ -203,20 +194,21 @@ def test_fetch_failure_triggers_cooldown(monkeypatch):
     """요청 실패(일시 차단 추정) 후 다음 요청은 냉각 시간이 지난 뒤에
     나가야 한다."""
     import time
-    from crawlers.base_crawler import BaseCrawler
 
     results = [None, "<html>ok</html>"]
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
+        SSGCrawler, "_http_get", lambda self, url: results.pop(0)
     )
     monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.4)
     monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
 
     c = SSGCrawler()
     url = "https://www.ssg.com/item/itemView.ssg?itemId=1"
+    # start는 냉각이 설정되는 첫 호출 이전에 측정 — 이후에 측정하면
+    # 냉각 설정~측정 사이 지연만큼 잔여 냉각이 줄어 간헐 실패한다
+    start = time.monotonic()
     with pytest.raises(Exception, match="우회 요청도 실패"):
         c.fetch_page(url)
-    start = time.monotonic()
     assert c.fetch_page(url) == "<html>ok</html>"
     assert time.monotonic() - start >= 0.4
 
@@ -270,3 +262,68 @@ def test_return_exchange_fee_not_mistaken_for_delivery():
     r = SSGCrawler().extract_price(HTML_RETURN_FEE_ONLY, "http://t")
     assert r["배송비"] == 0
     assert r["배송비 여부"] == "무료"
+
+
+# --- TLS 지문 위장 (curl_cffi) ---
+# 2026-07-31: SSG가 python-requests의 TLS 지문(JA3)을 첫 요청부터 403으로
+# 차단하기 시작 (shinsegaemall 포함 전 서브도메인 실측). curl_cffi의
+# chrome 위장으로는 동일 페이지가 200으로 열림을 실측 확인 → HTTP 수집을
+# curl_cffi(impersonate="chrome")로 전환한다.
+
+def _patch_fake_curl_session(monkeypatch, status_code=200, text="<html>ok</html>"):
+    import curl_cffi.requests as curl_requests
+
+    created = {}
+
+    class _FakeResp:
+        pass
+
+    class _FakeSession:
+        def __init__(self, impersonate=None, **kwargs):
+            created["impersonate"] = impersonate
+
+        def get(self, url, timeout=None, **kwargs):
+            created["url"] = url
+            r = _FakeResp()
+            r.status_code = status_code
+            r.text = text
+            return r
+
+    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+    return created
+
+
+def test_http_get_uses_chrome_impersonation(monkeypatch):
+    created = _patch_fake_curl_session(monkeypatch, text="<html>가격</html>")
+    c = SSGCrawler()
+    assert c._http_get("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1") == "<html>가격</html>"
+    assert created["impersonate"] == "chrome"
+    assert created["url"].endswith("itemId=1")
+
+
+def test_http_get_non_200_returns_none(monkeypatch):
+    _patch_fake_curl_session(monkeypatch, status_code=403, text="denied")
+    assert SSGCrawler()._http_get("https://shinsegaemall.ssg.com/x") is None
+
+
+def test_http_session_shared_across_instances(monkeypatch):
+    """쿠키(ak_bmsc 등) 누적을 위해 세션은 클래스 전역으로 재사용한다."""
+    import curl_cffi.requests as curl_requests
+
+    count = []
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            count.append(1)
+
+        def get(self, url, timeout=None, **kwargs):
+            r = type("R", (), {"status_code": 200, "text": "ok"})()
+            return r
+
+    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+    a, b = SSGCrawler(), SSGCrawler()
+    a._http_get("https://shinsegaemall.ssg.com/1")
+    b._http_get("https://shinsegaemall.ssg.com/2")
+    assert len(count) == 1

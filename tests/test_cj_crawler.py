@@ -109,9 +109,16 @@ def test_fetch_page_returns_rendered_html(monkeypatch):
     assert html == "<html>가격 43,000</html>"
     url, kwargs = fake.fetch_calls[0]
     assert url == "http://t/item/1"
+    # 대기 로직은 page_action으로 수행한다 — wait_selector를 같이 쓰면
+    # 선택자가 영원히 안 나타나는 페이지에서 타임아웃이 2배(대기 2번)가 됨
+    assert callable(kwargs["page_action"])
+    assert "wait_selector" not in kwargs
+
+
+def test_wait_selector_union():
     # 가격 또는 품절 요소 중 먼저 나타나는 쪽까지 대기해야 한다
     # (품절 페이지에는 가격 요소가 없어 가격만 기다리면 타임아웃)
-    parts = kwargs["wait_selector"].split(", ")
+    parts = CJCrawler()._wait_selector().split(", ")
     assert ".item_price strong.ff_price" in parts
     # 변형 DOM(가격이 .price_area 아래에만 있는 페이지)도 빠르게 매칭되도록
     assert ".price_area .price_txt > strong.ff_price" in parts
@@ -124,6 +131,72 @@ def test_fetch_page_returns_rendered_html(monkeypatch):
     # (2026-07 실측: 간헐적으로 가격 없는 HTML이 반환되어 not_found 오탐)
     # → 대기 조건에서는 제외해야 한다
     assert ".ff_price" not in parts
+
+
+# --- page_action: 가격 대기 후 배송비 영역 추가 대기 ---
+# 배송비 영역(.delivery_fees)은 가격보다 0.01~0.35초 늦게 렌더된다
+# (2026-07-31 실측). 가격 출현 즉시 HTML을 캡처하면 그 틈에 배송비가
+# 간헐적으로 누락되어 같은 상품의 배송비가 있다 없다 하는 오탐이 생김
+# → 가격이 뜬 뒤 배송비 영역을 짧게(cap) 추가 대기한다.
+
+class _FakeLocator:
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    def wait_for(self, state=None, timeout=None):
+        self.page.wait_calls.append((self.selector, timeout))
+        if self.selector in self.page.timeout_selectors:
+            raise TimeoutError(f"timeout: {self.selector}")
+
+    def count(self):
+        return self.page.counts.get(self.selector, 0)
+
+
+class _FakeDomPage:
+    def __init__(self, counts=None, timeout_selectors=()):
+        self.wait_calls = []
+        self.counts = counts or {}
+        self.timeout_selectors = set(timeout_selectors)
+
+    def locator(self, selector):
+        return _FakeLocator(self, selector)
+
+
+def test_page_action_waits_union_then_delivery_when_price_present():
+    c = CJCrawler()
+    page = _FakeDomPage(counts={c._price_wait_union(): 1})
+    assert c._page_action(page) is page
+    selectors = [s for s, _ in page.wait_calls]
+    assert selectors == [c._wait_selector(), c.DELIVERY_WAIT_SELECTOR]
+    # 배송비 대기는 짧은 cap — 영역이 아예 없는 페이지에서 오래 안 기다림
+    assert page.wait_calls[1][1] == c.DELIVERY_WAIT_TIMEOUT_MS
+
+
+def test_page_action_skips_delivery_when_no_price():
+    """품절/메인 리다이렉트 페이지에는 가격이 없다 — 배송비 대기 생략."""
+    c = CJCrawler()
+    page = _FakeDomPage(counts={})  # 가격 요소 0개
+    c._page_action(page)
+    selectors = [s for s, _ in page.wait_calls]
+    assert c.DELIVERY_WAIT_SELECTOR not in selectors
+
+
+def test_page_action_survives_union_timeout():
+    c = CJCrawler()
+    page = _FakeDomPage(timeout_selectors={c._wait_selector()})
+    assert c._page_action(page) is page  # 예외 없이 반환
+    assert len(page.wait_calls) == 1     # 배송비 대기까지 가지 않음
+
+
+def test_page_action_survives_delivery_timeout():
+    c = CJCrawler()
+    page = _FakeDomPage(
+        counts={c._price_wait_union(): 1},
+        timeout_selectors={c.DELIVERY_WAIT_SELECTOR},
+    )
+    assert c._page_action(page) is page  # 예외 없이 반환
 
 
 def test_session_created_once_and_shared(monkeypatch):
