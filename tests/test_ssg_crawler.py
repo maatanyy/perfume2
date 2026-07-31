@@ -13,6 +13,8 @@ def _no_rate_limit(monkeypatch):
     monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
     monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
+    monkeypatch.setattr(SSGCrawler, "_consecutive_403", 0)
+    monkeypatch.setattr(SSGCrawler, "_fast_fail_until", 0.0)
 
 HTML_SALE_WITH_DELIVERY = """
 <html><body>
@@ -327,3 +329,80 @@ def test_http_session_shared_across_instances(monkeypatch):
     a._http_get("https://shinsegaemall.ssg.com/1")
     b._http_get("https://shinsegaemall.ssg.com/2")
     assert len(count) == 1
+
+
+# --- IP 차단 서킷 브레이커 ---
+# Akamai 차단은 요청이 올 때마다 점수가 갱신되는 방식이라, 차단 중에도
+# 191개 상품 × 4~5 URL을 계속 요청하면 차단이 영원히 안 풀리는 악순환이
+# 된다 (2026-07-31 실측). 연속 403이 임계치에 달하면 일정 시간 요청 자체를
+# 생략하고 명확한 오류로 빠르게 기록한다.
+
+def _patch_curl_with_statuses(monkeypatch, statuses):
+    """statuses 순서대로 응답하는 가짜 curl 세션. 호출된 URL 목록을 반환."""
+    import curl_cffi.requests as curl_requests
+
+    calls = []
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, timeout=None, **kwargs):
+            calls.append(url)
+            code = statuses.pop(0) if statuses else 403
+            # 200이면 가격 마크업 포함 (crawl_price의 짧은-HTML 재시도 회피 패딩)
+            text = HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
+            return type("R", (), {"status_code": code, "text": text})()
+
+    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+    return calls
+
+
+def test_consecutive_403_trips_circuit_breaker(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 3)
+    calls = _patch_curl_with_statuses(monkeypatch, [403, 403, 403])
+
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    for i in range(3):
+        c.crawl_price(url.format(i), max_retries=1)
+    assert len(calls) == 3
+
+    # 임계치 도달 후에는 HTTP 요청 없이 즉시 명확한 오류
+    r = c.crawl_price(url.format(99), max_retries=1)
+    assert len(calls) == 3               # 추가 요청 없음
+    assert r["결과 상태"] == "error"
+    assert "차단 감지" in r["에러 발생"]
+
+
+def test_success_resets_403_streak(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 3)
+    calls = _patch_curl_with_statuses(monkeypatch, [403, 403, 200, 403, 403])
+
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    for i in range(5):
+        c.crawl_price(url.format(i), max_retries=1)
+    # 중간 200이 streak을 리셋 → 차단 미발동, 5회 모두 실제 요청
+    assert len(calls) == 5
+    c.crawl_price(url.format(99), max_retries=1)
+    assert len(calls) == 6
+
+
+def test_circuit_breaker_expires(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 1)
+    monkeypatch.setattr(SSGCrawler, "BLOCK_FAST_FAIL_DURATION", 0.2)
+    calls = _patch_curl_with_statuses(monkeypatch, [403, 200])
+
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
+    c.crawl_price(url, max_retries=1)    # 403 → 차단 발동
+    c.crawl_price(url, max_retries=1)    # 생략됨
+    assert len(calls) == 1
+
+    import time
+    time.sleep(0.25)                     # 차단 만료
+    r = c.crawl_price(url, max_retries=1)
+    assert len(calls) == 2
+    assert r["결과 상태"] == "success"

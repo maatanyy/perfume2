@@ -89,6 +89,18 @@ class SSGCrawler(BaseCrawler):
     _http_lock = threading.Lock()
     HTTP_TIMEOUT = 30  # 초
 
+    # IP 차단 서킷 브레이커 (2026-07-31 실측): Akamai 차단은 요청이 올 때마다
+    # 점수가 갱신되는 방식이라, 차단된 상태로 잡 전체(수백 요청)를 계속
+    # 돌리면 차단이 영원히 안 풀리는 악순환이 된다. 연속 403이 임계치에
+    # 달하면 일정 시간 요청 자체를 생략하고 명확한 오류로 빠르게 기록한다.
+    BLOCK_STREAK_THRESHOLD = 10
+    BLOCK_FAST_FAIL_DURATION = 1800.0  # 초 (30분)
+    BLOCK_FAST_FAIL_ERROR = (
+        "SSG IP 차단 감지 — 남은 SSG 요청 생략 (차단이 풀리도록 수 시간 뒤 재실행 권장)"
+    )
+    _consecutive_403 = 0
+    _fast_fail_until = 0.0
+
     def __init__(self):
         super().__init__(use_selenium=False)
 
@@ -102,13 +114,26 @@ class SSGCrawler(BaseCrawler):
         return cls._http_session
 
     def _http_get(self, url: str) -> Optional[str]:
+        cls = SSGCrawler
         try:
-            with SSGCrawler._http_lock:
+            with cls._http_lock:
                 response = self._get_http_session().get(
                     url,
                     timeout=self.HTTP_TIMEOUT,
                     headers={"Accept-Language": "ko-KR,ko;q=0.9"},
                 )
+                if response.status_code == 403:
+                    cls._consecutive_403 += 1
+                    if cls._consecutive_403 >= cls.BLOCK_STREAK_THRESHOLD:
+                        cls._fast_fail_until = (
+                            time.monotonic() + cls.BLOCK_FAST_FAIL_DURATION
+                        )
+                        logger.error(
+                            f"[SSG] 연속 403 {cls._consecutive_403}회 — IP 차단 판정, "
+                            f"{int(cls.BLOCK_FAST_FAIL_DURATION / 60)}분간 SSG 요청 생략"
+                        )
+                elif response.status_code == 200:
+                    cls._consecutive_403 = 0
             if response.status_code != 200:
                 logger.warning(f"[SSG] HTTP {response.status_code}: {url[:60]}")
                 return None
@@ -126,11 +151,15 @@ class SSGCrawler(BaseCrawler):
         return url
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        cls = SSGCrawler
+        # 서킷 브레이커: 차단 판정 중에는 요청(과 요청 간격 대기) 없이 즉시 실패
+        # — 요청을 멈춰야 차단 점수 갱신이 끊겨 차단이 풀릴 기회가 생긴다
+        if time.monotonic() < cls._fast_fail_until:
+            raise Exception(self.BLOCK_FAST_FAIL_ERROR)
+
         fetch_url = self._rewrite_blocked_url(url)
         if fetch_url != url:
             logger.info(f"[SSG] 봇 차단 도메인 → 서브도메인 우회: {fetch_url[:70]}...")
-
-        cls = SSGCrawler
         with cls._rate_lock:
             now = time.monotonic()
             wait = max(
