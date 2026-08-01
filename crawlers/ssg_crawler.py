@@ -130,13 +130,39 @@ class SSGCrawler(BaseCrawler):
     def __init__(self):
         super().__init__(use_selenium=False)
 
+    # 데이터센터 IP는 봇 차단 서비스가 위험군으로 분류할 수 있다. 환경변수
+    # SSG_PROXY(예: http://user:pw@host:port)가 설정되면 브라우저 워밍업과
+    # HTTP 수집 모두 해당 프록시를 경유한다. 미설정이면 직접 요청(기존 동작).
+    PROXY_ENV = "SSG_PROXY"
+
+    @classmethod
+    def _proxy(cls) -> Optional[str]:
+        return os.environ.get(cls.PROXY_ENV) or None
+
+    @classmethod
+    def _session_kwargs(cls) -> Dict:
+        proxy = cls._proxy()
+        if not proxy:
+            return {}
+        return {"proxies": {"http": proxy, "https": proxy}}
+
+    @classmethod
+    def _warmup_session_kwargs(cls) -> Dict:
+        kwargs = {"headless": False, "timeout": cls.WARMUP_TIMEOUT_MS, "retries": 1}
+        proxy = cls._proxy()
+        if proxy:
+            kwargs["proxy"] = proxy
+        return kwargs
+
     @classmethod
     def _get_http_session(cls):
         if cls._http_session is None:
             # curl_cffi는 scrapling[fetchers]의 의존성 — 사용 시점에만 import
             from curl_cffi import requests as curl_requests
 
-            cls._http_session = curl_requests.Session(impersonate="chrome")
+            cls._http_session = curl_requests.Session(
+                impersonate="chrome", **cls._session_kwargs()
+            )
         return cls._http_session
 
     # --- 브라우저 쿠키 워밍업 ---
@@ -205,9 +231,7 @@ class SSGCrawler(BaseCrawler):
 
         session = None
         try:
-            session = StealthySession(
-                headless=False, timeout=cls.WARMUP_TIMEOUT_MS, retries=1
-            )
+            session = StealthySession(**cls._warmup_session_kwargs())
             session.start()
             session.fetch(cls.WARMUP_ITEM_URL, page_action=_browse)
         except Exception as e:

@@ -471,3 +471,44 @@ def test_429_does_not_trigger_rewarm(monkeypatch):
     c._http_get(url.format(2))
     c._http_get(url.format(3))
     assert len(warm_calls) == 1
+
+
+# --- 프록시 경유 (선택) ---
+# 데이터센터 IP는 Akamai가 위험군으로 분류할 수 있다. 환경변수 SSG_PROXY가
+# 설정되면 브라우저 워밍업과 HTTP 수집 모두 해당 프록시를 경유한다
+# (미설정이면 기존과 동일하게 직접 요청).
+
+def test_no_proxy_by_default(monkeypatch):
+    monkeypatch.delenv("SSG_PROXY", raising=False)
+    assert SSGCrawler._proxy() is None
+    assert SSGCrawler._warmup_session_kwargs() == {
+        "headless": False,
+        "timeout": SSGCrawler.WARMUP_TIMEOUT_MS,
+        "retries": 1,
+    }
+
+
+def test_proxy_applied_to_warmup_and_http(monkeypatch):
+    import curl_cffi.requests as curl_requests
+
+    monkeypatch.setenv("SSG_PROXY", "http://user:pw@proxy.example:8080")
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+
+    assert SSGCrawler._proxy() == "http://user:pw@proxy.example:8080"
+    assert SSGCrawler._warmup_session_kwargs()["proxy"] == (
+        "http://user:pw@proxy.example:8080"
+    )
+
+    created = {}
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+            self.cookies = _FakeCookieJar()
+
+    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
+    SSGCrawler._get_http_session()
+    assert created["proxies"] == {
+        "http": "http://user:pw@proxy.example:8080",
+        "https": "http://user:pw@proxy.example:8080",
+    }
