@@ -226,25 +226,41 @@ class CrawlingEngineV2:
         thread.start()
         logger.info(f"[CrawlingEngineV2] 작업 #{job.id} 시작")
 
+    def _should_cleanup_browsers(self, exclude_job_id: int) -> bool:
+        """브라우저 프로세스를 정리해도 되는지. 정리는 전역(모든 chrome
+        프로세스 SIGKILL)이라, 다른 잡이 실행 중이면 그 잡의 브라우저까지
+        죽는다 — 마지막 잡이 끝날 때만 정리한다."""
+        with self._lock:
+            others = [jid for jid in self.active_jobs if jid != exclude_job_id]
+        if others:
+            logger.info(
+                f"[Cleanup] 실행 중인 다른 작업({others}) 때문에 브라우저 정리 생략"
+            )
+            return False
+        return True
+
+    def _kill_browser_processes(self):
+        try:
+            import psutil, signal
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    name = (proc.info.get('name') or '').lower()
+                    if 'chrome' in name or 'chromium' in name or 'chromedriver' in name:
+                        proc.send_signal(signal.SIGKILL)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except Exception as e:
+            logger.warning(f"[Cleanup] Chrome 정리 실패: {e}")
+
     def cancel_job(self, job_id: int):
         with self._lock:
             self.job_cancelled[job_id] = True
         logger.info(f"[CrawlingEngineV2] 작업 #{job_id} 취소 요청")
 
-        # Chrome 프로세스 강제 종료
-        try:
-            import psutil, signal
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    name = (proc.info.get('name') or '').lower()
-                    cmdline = ' '.join(proc.info.get('cmdline') or []).lower()
-                    if 'chrome' in name or 'chromium' in name or 'chromedriver' in name:
-                        proc.send_signal(signal.SIGKILL)
-                        logger.info(f"[Cancel] Chrome 프로세스 강제 종료: PID {proc.pid}")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        except Exception as e:
-            logger.warning(f"[Cancel] Chrome 강제 종료 실패: {e}")
+        # Chrome 프로세스 강제 종료 (다른 잡이 돌고 있으면 생략 — 전역 종료라
+        # 그 잡의 브라우저까지 죽는다)
+        if self._should_cleanup_browsers(exclude_job_id=job_id):
+            self._kill_browser_processes()
 
     def get_job_stats(self, job_id: int) -> Optional[Dict]:
         stats = self.job_stats.get(job_id)
@@ -393,18 +409,10 @@ class CrawlingEngineV2:
             self._push_sse_complete(job_id)
 
         finally:
-            # Chrome 프로세스 강제 종료 (좀비 방지)
-            try:
-                import psutil, signal
-                for proc in psutil.process_iter(['pid', 'name']):
-                    try:
-                        name = (proc.info.get('name') or '').lower()
-                        if 'chrome' in name or 'chromium' in name or 'chromedriver' in name:
-                            proc.send_signal(signal.SIGKILL)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            except Exception as e:
-                logger.warning(f"[Cleanup] Chrome 정리 실패: {e}")
+            # Chrome 프로세스 강제 종료 (좀비 방지) — 단, 다른 잡이 아직
+            # 돌고 있으면 그 잡의 브라우저까지 죽이므로 건너뛴다
+            if self._should_cleanup_browsers(exclude_job_id=job_id):
+                self._kill_browser_processes()
 
             _clear_thread_crawler_cache()
             with self._lock:
