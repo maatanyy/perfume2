@@ -300,7 +300,10 @@ def _patch_fake_curl_session(monkeypatch, status_code=200, text="<html>ok</html>
     return created
 
 
-def test_http_get_uses_chrome_impersonation(monkeypatch):
+def test_http_get_uses_browser_impersonation(monkeypatch):
+    """requests의 TLS 지문은 차단되므로 실제 브라우저로 위장해야 한다.
+    위장 대상은 쿠키를 발급한 워밍업 브라우저 계열을 따른다."""
+    monkeypatch.setattr(SSGCrawler, "_camoufox_available", classmethod(lambda cls: False))
     created = _patch_fake_curl_session(monkeypatch, text="<html>가격</html>")
     c = SSGCrawler()
     assert c._http_get("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1") == "<html>가격</html>"
@@ -512,3 +515,66 @@ def test_proxy_applied_to_warmup_and_http(monkeypatch):
         "http": "http://user:pw@proxy.example:8080",
         "https": "http://user:pw@proxy.example:8080",
     }
+
+
+# --- Camoufox 워밍업 (지문 위장) ---
+# 2026-08-01 실측: 서버는 GPU가 없어 WebGL이 소프트웨어 렌더러(llvmpipe)로
+# 노출되고, 이 지문 때문에 한국 주거용 프록시 IP로 나가도 SSG 상품 페이지가
+# 403이다. Camoufox(지문을 네이티브로 위장하는 Firefox)로 워밍업하면
+# 실제 PC 지문으로 보인다. Camoufox는 Firefox이므로 이후 HTTP 재생도
+# Firefox로 위장해야 쿠키가 유효하다.
+
+def test_warmup_prefers_camoufox_when_available(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "_camoufox_available", classmethod(lambda cls: True))
+    assert SSGCrawler._warm_impersonate() == "firefox"
+
+
+def test_warmup_falls_back_to_chrome_impersonation(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "_camoufox_available", classmethod(lambda cls: False))
+    assert SSGCrawler._warm_impersonate() == "chrome"
+
+
+def test_camoufox_options_spoof_desktop_fingerprint(monkeypatch):
+    monkeypatch.delenv("SSG_PROXY", raising=False)
+    opts = SSGCrawler._camoufox_options()
+    assert opts["os"] == "windows"          # 리눅스 서버 흔적 제거
+    assert opts["headless"] is True         # Xvfb 없이도 동작해야 한다
+    # humanize는 headless에서 무한 대기 사례가 있어 끈다 — 사람 흔적은
+    # _browse_for_cookies의 명시적 마우스/스크롤로 공급한다
+    assert opts["humanize"] is False
+    assert opts["locale"] == "ko-KR"
+    assert opts["webgl_config"]             # llvmpipe 대신 실제 GPU 문자열
+    assert "proxy" not in opts
+
+
+def test_camoufox_options_include_proxy(monkeypatch):
+    monkeypatch.setenv("SSG_PROXY", "http://u:p@gw.example:823")
+    opts = SSGCrawler._camoufox_options()
+    assert opts["proxy"] == {
+        "server": "http://gw.example:823",
+        "username": "u",
+        "password": "p",
+    }
+
+
+def test_warm_cookies_applied_with_declared_impersonation(monkeypatch):
+    import curl_cffi.requests as curl_requests
+
+    created = {}
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+            self.cookies = _FakeCookieJar()
+
+    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+    SSGCrawler._apply_warm_cookies(
+        {
+            "cookies": [{"name": "_abck", "value": "v", "domain": ".ssg.com"}],
+            "ua": "Mozilla/5.0 (Windows NT 10.0; rv:133.0) Gecko/20100101 Firefox/133.0",
+            "impersonate": "firefox",
+        }
+    )
+    assert created["impersonate"] == "firefox"
+    assert "Firefox" in SSGCrawler._warm_ua

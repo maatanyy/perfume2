@@ -161,9 +161,55 @@ class SSGCrawler(BaseCrawler):
             from curl_cffi import requests as curl_requests
 
             cls._http_session = curl_requests.Session(
-                impersonate="chrome", **cls._session_kwargs()
+                impersonate=cls._warm_impersonate(), **cls._session_kwargs()
             )
         return cls._http_session
+
+    # --- 워밍업 브라우저 선택 ---
+    # 2026-08-01 실측: 서버는 GPU가 없어 WebGL이 소프트웨어 렌더러(llvmpipe)로
+    # 노출되고, 이 지문 탓에 한국 주거용 프록시 IP로 나가도 상품 페이지가 403.
+    # (같은 코드가 실제 PC에서는 통과 — 브라우저 출구 IP를 프록시로 확인함)
+    # Camoufox는 지문을 브라우저 내부에서 위장해 JS로 탐지되지 않는다.
+    # Camoufox는 Firefox 기반이라 이후 HTTP 재생도 Firefox로 위장해야 한다.
+    WARMUP_OS = "windows"
+    WARMUP_LOCALE = "ko-KR"
+    # Camoufox 내장 WebGL 지문 DB에 존재하는 조합이어야 한다 (없는 값이면
+    # 실행 자체가 거부됨). 윈도우 사용자 중 가장 흔한 조합을 쓴다.
+    WARMUP_WEBGL = (
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
+    )
+
+    @classmethod
+    def _camoufox_available(cls) -> bool:
+        try:
+            import camoufox.sync_api  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    @classmethod
+    def _warm_impersonate(cls) -> str:
+        return "firefox" if cls._camoufox_available() else "chrome"
+
+    @classmethod
+    def _camoufox_options(cls) -> Dict:
+        options = {
+            "headless": True,
+            "os": cls.WARMUP_OS,
+            "locale": cls.WARMUP_LOCALE,
+            # humanize(자동 커서 시뮬레이션)는 headless에서 무한 대기하는
+            # 사례가 있어 끈다 (2026-08-01 실측: 5분 넘게 진행 없음).
+            # 사람 흔적은 _browse_for_cookies의 명시적 마우스/스크롤로 공급.
+            "humanize": False,
+            "webgl_config": cls.WARMUP_WEBGL,
+        }
+        proxy = cls._proxy()
+        if proxy:
+            from scrapling.engines.toolbelt.navigation import construct_proxy_dict
+
+            options["proxy"] = construct_proxy_dict(proxy)
+        return options
 
     # --- 브라우저 쿠키 워밍업 ---
 
@@ -201,39 +247,72 @@ class SSGCrawler(BaseCrawler):
             return None
 
     @classmethod
+    def _browse_for_cookies(cls, page, harvested: Dict):
+        """메인 방문 → 사람 흔적 공급 → 상품 페이지. 센서 쿠키를 수확한다.
+        (Playwright/Camoufox 어느 쪽 page 객체든 동일 API로 동작)"""
+        page.goto(cls.WARMUP_MAIN_URL)
+        page.wait_for_timeout(3000)
+        # 센서에 사람 흔적(마우스/스크롤) 공급 — 없으면 검증이 통과되지 않음
+        for x, y in ((200, 300), (400, 350), (600, 500)):
+            page.mouse.move(x, y)
+            page.wait_for_timeout(300)
+        page.mouse.wheel(0, 600)
+        page.wait_for_timeout(2500)
+        page.goto(cls.WARMUP_ITEM_URL)
+        try:
+            page.locator("em.ssg_price").first.wait_for(state="attached", timeout=12_000)
+            harvested["ok"] = True
+        except Exception:
+            harvested["ok"] = False
+        harvested["cookies"] = page.context.cookies()
+        harvested["ua"] = page.evaluate("navigator.userAgent")
+        return page
+
+    @classmethod
     def _warmup_in_browser_thread(cls) -> Optional[Dict]:
         # 전용 스레드(_warm_executor) 안에서만 실행된다 — 직접 호출 금지.
+        if cls._camoufox_available():
+            return cls._warmup_with_camoufox()
+        return cls._warmup_with_patchright()
+
+    @classmethod
+    def _warmup_with_camoufox(cls) -> Optional[Dict]:
+        from camoufox.sync_api import Camoufox
+
+        harvested: Dict = {}
+        try:
+            with Camoufox(**cls._camoufox_options()) as browser:
+                page = browser.new_page()
+                try:
+                    cls._browse_for_cookies(page, harvested)
+                finally:
+                    page.close()
+        except Exception as e:
+            logger.warning(f"[SSG] Camoufox 워밍업 실패: {e}")
+            return None
+        if not harvested.get("ok") or not harvested.get("cookies"):
+            logger.warning("[SSG] Camoufox가 상품 페이지를 열지 못함")
+            return None
+        return {
+            "cookies": harvested["cookies"],
+            "ua": harvested["ua"],
+            "impersonate": "firefox",
+        }
+
+    @classmethod
+    def _warmup_with_patchright(cls) -> Optional[Dict]:
         from scrapling.fetchers import StealthySession
 
         cls._ensure_virtual_display()
         harvested: Dict = {}
-
-        def _browse(page):
-            page.goto(cls.WARMUP_MAIN_URL)
-            page.wait_for_timeout(3000)
-            # 센서에 사람 흔적(마우스/스크롤) 공급 — 없으면 검증이 통과되지 않음
-            for x, y in ((200, 300), (400, 350), (600, 500)):
-                page.mouse.move(x, y)
-                page.wait_for_timeout(300)
-            page.mouse.wheel(0, 600)
-            page.wait_for_timeout(2500)
-            page.goto(cls.WARMUP_ITEM_URL)
-            try:
-                page.locator("em.ssg_price").first.wait_for(
-                    state="attached", timeout=12_000
-                )
-                harvested["ok"] = True
-            except Exception:
-                harvested["ok"] = False
-            harvested["cookies"] = page.context.cookies()
-            harvested["ua"] = page.evaluate("navigator.userAgent")
-            return page
-
         session = None
         try:
             session = StealthySession(**cls._warmup_session_kwargs())
             session.start()
-            session.fetch(cls.WARMUP_ITEM_URL, page_action=_browse)
+            session.fetch(
+                cls.WARMUP_ITEM_URL,
+                page_action=lambda page: cls._browse_for_cookies(page, harvested),
+            )
         except Exception as e:
             logger.warning(f"[SSG] 브라우저 워밍업 실패: {e}")
             return None
@@ -246,13 +325,21 @@ class SSGCrawler(BaseCrawler):
         if not harvested.get("ok") or not harvested.get("cookies"):
             logger.warning("[SSG] 워밍업 브라우저가 상품 페이지를 열지 못함")
             return None
-        return {"cookies": harvested["cookies"], "ua": harvested["ua"]}
+        return {
+            "cookies": harvested["cookies"],
+            "ua": harvested["ua"],
+            "impersonate": "chrome",
+        }
 
     @classmethod
     def _apply_warm_cookies(cls, data: Dict):
         from curl_cffi import requests as curl_requests
 
-        session = curl_requests.Session(impersonate="chrome")
+        # 쿠키를 발급한 브라우저와 같은 계열로 위장해야 유효하다
+        # (Camoufox=Firefox, patchright=Chrome)
+        session = curl_requests.Session(
+            impersonate=data.get("impersonate", "chrome"), **cls._session_kwargs()
+        )
         for cookie in data["cookies"]:
             try:
                 session.cookies.set(

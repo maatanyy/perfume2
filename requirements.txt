@@ -53,5 +53,10 @@ scrapling[fetchers]>=0.4,<0.5
 # (scrapling[fetchers]의 의존성이기도 하지만 SSG가 직접 import하므로 명시)
 curl_cffi>=0.10
 # SSG 쿠키 워밍업용 headful 브라우저를 디스플레이 없는 서버에서 띄우기 위함
-# (별도로 시스템 패키지 필요: apt-get install -y xvfb)
+# (별도로 시스템 패키지 필요: apt-get install -y xvfb) — Camoufox 미설치 시 fallback
 pyvirtualdisplay>=3.0
+# SSG 쿠키 워밍업 주력: 지문(WebGL/OS/화면)을 브라우저 내부에서 위장하는 Firefox.
+# 서버는 GPU가 없어 WebGL이 llvmpipe로 노출되고 그 지문 때문에 차단된다
+# (2026-08-01 실측: 한국 주거용 프록시 IP로 나가도 상품 페이지 403).
+# 설치 후 1회 `python -m camoufox fetch` 실행 필요 (브라우저 다운로드)
+camoufox[geoip]>=0.4
