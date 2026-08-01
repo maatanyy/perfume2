@@ -578,3 +578,36 @@ def test_warm_cookies_applied_with_declared_impersonation(monkeypatch):
     )
     assert created["impersonate"] == "firefox"
     assert "Firefox" in SSGCrawler._warm_ua
+
+
+# --- 서킷 브레이커 완화 ---
+# 2026-08-01 실측: 워밍업 3회 실패로 30분 차단이 걸려 잡의 74%(656건)가
+# 통째로 스킵됐다. 잡 길이가 ~45분이라 30분 차단은 사실상 잡 포기와 같다.
+# 차단을 짧게(5분) 잡고, 만료 시 실패 카운터를 리셋해 다시 기회를 준다.
+
+def test_block_duration_shorter_than_typical_job():
+    assert SSGCrawler.BLOCK_FAST_FAIL_DURATION <= 600
+
+
+def test_failure_counter_resets_after_block_expires(monkeypatch):
+    """차단이 풀린 뒤에는 한 번 더 실패해도 곧바로 재차단되면 안 된다
+    (누적 카운터가 남아 있으면 실패 1회에 30분씩 반복 차단됨)."""
+    import time
+
+    monkeypatch.setattr(SSGCrawler, "MAX_WARMUP_FAILURES", 2)
+    monkeypatch.setattr(SSGCrawler, "BLOCK_FAST_FAIL_DURATION", 0.2)
+    _, warm_calls = _patch_warmup(
+        monkeypatch, statuses=[], warm_results=[False, False, False, True]
+    )
+
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
+    c._http_get(url)                      # 실패 1
+    c._http_get(url)                      # 실패 2 → 차단
+    assert SSGCrawler._fast_fail_until > 0
+
+    time.sleep(0.25)                      # 차단 만료
+    c._http_get(url)                      # 실패 3 — 카운터가 리셋됐다면 재차단 안 됨
+    assert not SSGCrawler._is_blocked()
+    assert c._http_get(url) is not None    # 이어서 성공
+    assert len(warm_calls) == 4

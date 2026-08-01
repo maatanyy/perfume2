@@ -70,3 +70,96 @@ def test_sold_out_detected():
 def test_not_found():
     r = ShinsegaeCrawler().extract_price(HTML_EMPTY, "http://t")
     assert r["결과 상태"] == "not_found"
+
+
+# --- 부하 중 축소 페이지(스텁) 대응 ---
+# 2026-08-01 실측: 단건 요청은 343KB 정상 페이지가 오지만, 잡 실행 중
+# (동시 요청 부하) 21%가 가격 없는 81KB 축소 페이지를 받아 추출실패로
+# 기록됐다. 서버에서 같은 URL 단건 수집은 성공 → 사이트/IP 문제가 아니라
+# 요청 몰림 때문. 요청 간격을 두고, 축소 페이지는 1회 재요청한다.
+
+NORMAL_HTML = (
+    '<html><body><div class="div-best"><em class="_bestPrice">36,900</em></div>'
+    + "<!--" + "x" * 200_000 + "-->"
+    + "</body></html>"
+)
+STUB_HTML = "<html><body><p>일시적 오류</p>" + "<!--" + "x" * 80_000 + "--></body></html>"
+
+
+def test_stub_page_triggers_one_refetch(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "DEGRADED_RETRY_DELAY", 0.0)
+    pages = [STUB_HTML, NORMAL_HTML]
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return pages.pop(0)
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    html = ShinsegaeCrawler().fetch_page("http://t/1")
+    assert len(calls) == 2                       # 축소 페이지 → 1회 재요청
+    assert "_bestPrice" in html                  # 정상 페이지를 반환
+
+
+def test_normal_page_not_refetched(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return NORMAL_HTML
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    ShinsegaeCrawler().fetch_page("http://t/1")
+    assert len(calls) == 1
+
+
+def test_persistent_stub_returns_stub_not_error(monkeypatch):
+    """실제로 판매종료된 상품도 축소 페이지를 준다 — 재요청 후에도 같으면
+    기존처럼 '추출실패'로 남겨야 한다 (오류로 격상하면 안 됨)."""
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "DEGRADED_RETRY_DELAY", 0.0)
+    monkeypatch.setattr(
+        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: STUB_HTML
+    )
+    html = ShinsegaeCrawler().fetch_page("http://t/1")
+    assert html == STUB_HTML
+    assert ShinsegaeCrawler().extract_price(html, "http://t/1")["결과 상태"] == "not_found"
+
+
+def test_none_response_not_refetched(monkeypatch):
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    calls = []
+
+    def fake_fetch(self, url, wait_time=2):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", fake_fetch)
+    assert ShinsegaeCrawler().fetch_page("http://t/1") is None
+    assert len(calls) == 1
+
+
+def test_request_interval_enforced(monkeypatch):
+    """동시 요청이 몰려 축소 페이지를 받지 않도록 클래스 전역 간격을 둔다."""
+    import time
+    from crawlers.base_crawler import BaseCrawler
+
+    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: NORMAL_HTML)
+    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.3)
+    monkeypatch.setattr(ShinsegaeCrawler, "_last_fetch_at", 0.0)
+
+    a, b = ShinsegaeCrawler(), ShinsegaeCrawler()
+    start = time.monotonic()
+    a.fetch_page("http://t/1")
+    b.fetch_page("http://t/2")
+    assert time.monotonic() - start >= 0.3

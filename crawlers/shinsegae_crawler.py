@@ -2,9 +2,11 @@
 
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
-from typing import Dict, List
+from typing import Dict, List, Optional
 import re
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,49 @@ class ShinsegaeCrawler(BaseCrawler):
         "[class*='soldOut']",
     ]
 
+    # 2026-08-01 실측: 단건 요청은 343KB 정상 페이지가 오지만, 잡 실행 중
+    # 요청이 몰리면 가격이 없는 ~81KB 축소 페이지가 섞여 와 21%가 추출실패로
+    # 기록됐다 (같은 URL을 서버에서 단건 수집하면 성공). 요청 간격을 두고,
+    # 축소 페이지를 받으면 1회 재요청한다. 판매종료 상품도 축소 페이지를
+    # 주므로, 재요청 후에도 같으면 그대로 두어 '추출실패'로 남긴다.
+    MIN_REQUEST_INTERVAL = 1.0  # 초
+    DEGRADED_HTML_MAX = 150_000  # 정상 페이지는 ~340KB
+    DEGRADED_RETRY_DELAY = 3.0  # 초
+    PRICE_MARKER = "_bestPrice"
+    _rate_lock = threading.Lock()
+    _last_fetch_at = 0.0
+
     def __init__(self):
         super().__init__(use_selenium=False)
+
+    def _looks_degraded(self, html: Optional[str]) -> bool:
+        return bool(
+            html
+            and len(html) < self.DEGRADED_HTML_MAX
+            and self.PRICE_MARKER not in html
+        )
+
+    def _gated_fetch(self, url: str, wait_time: int) -> Optional[str]:
+        cls = ShinsegaeCrawler
+        with cls._rate_lock:
+            wait = cls.MIN_REQUEST_INTERVAL - (time.monotonic() - cls._last_fetch_at)
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_fetch_at = time.monotonic()
+        return super().fetch_page(url, wait_time)
+
+    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        html = self._gated_fetch(url, wait_time)
+        if not self._looks_degraded(html):
+            return html
+        logger.warning(
+            f"[신세계] 축소 페이지 감지({len(html)}B) — {self.DEGRADED_RETRY_DELAY}초 후 재요청"
+        )
+        time.sleep(self.DEGRADED_RETRY_DELAY)
+        retry_html = self._gated_fetch(url, wait_time)
+        if retry_html and not self._looks_degraded(retry_html):
+            return retry_html
+        return retry_html or html
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return [

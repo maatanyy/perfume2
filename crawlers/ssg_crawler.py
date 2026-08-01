@@ -96,7 +96,9 @@ class SSGCrawler(BaseCrawler):
     # 점수가 갱신되는 방식이라, 차단된 상태로 잡 전체(수백 요청)를 계속
     # 돌리면 차단이 영원히 안 풀리는 악순환이 된다. 연속 403이 임계치에
     # 달하면 일정 시간 요청 자체를 생략하고 명확한 오류로 빠르게 기록한다.
-    BLOCK_FAST_FAIL_DURATION = 1800.0  # 초 (30분)
+    # 잡 길이가 ~45분이라 차단이 길면 잡 포기와 같다 (2026-08-01 실측:
+    # 30분 차단으로 882건 중 656건이 통째로 스킵됨). 짧게 끊고 재시도한다.
+    BLOCK_FAST_FAIL_DURATION = 300.0  # 초 (5분)
     BLOCK_FAST_FAIL_ERROR = (
         "SSG 차단 감지 — 브라우저 쿠키 워밍업 반복 실패, 남은 SSG 요청 생략"
     )
@@ -179,6 +181,15 @@ class SSGCrawler(BaseCrawler):
         "Google Inc. (NVIDIA)",
         "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
     )
+
+    @classmethod
+    def _available_memory_mb(cls) -> int:
+        try:
+            import psutil
+
+            return int(psutil.virtual_memory().available / 1024 / 1024)
+        except Exception:
+            return -1
 
     @classmethod
     def _camoufox_available(cls) -> bool:
@@ -264,6 +275,10 @@ class SSGCrawler(BaseCrawler):
             harvested["ok"] = True
         except Exception:
             harvested["ok"] = False
+        try:
+            harvested["html_len"] = len(page.content())
+        except Exception:
+            harvested["html_len"] = 0
         harvested["cookies"] = page.context.cookies()
         harvested["ua"] = page.evaluate("navigator.userAgent")
         return page
@@ -291,7 +306,13 @@ class SSGCrawler(BaseCrawler):
             logger.warning(f"[SSG] Camoufox 워밍업 실패: {e}")
             return None
         if not harvested.get("ok") or not harvested.get("cookies"):
-            logger.warning("[SSG] Camoufox가 상품 페이지를 열지 못함")
+            # 실패 원인(차단 vs 자원 부족)을 로그만으로 구분할 수 있게 남긴다
+            logger.warning(
+                f"[SSG] Camoufox가 상품 페이지를 열지 못함 "
+                f"(HTML {harvested.get('html_len', 0):,}B, "
+                f"쿠키 {len(harvested.get('cookies') or [])}개, "
+                f"여유 메모리 {cls._available_memory_mb()}MB)"
+            )
             return None
         return {
             "cookies": harvested["cookies"],
@@ -351,9 +372,23 @@ class SSGCrawler(BaseCrawler):
         cls._warm_ua = data.get("ua")
 
     @classmethod
+    def _is_blocked(cls) -> bool:
+        """차단 중인지. 만료됐으면 실패 카운터를 리셋해 다시 기회를 준다
+        (리셋하지 않으면 이후 실패 1회마다 재차단이 반복된다)."""
+        if time.monotonic() < cls._fast_fail_until:
+            return True
+        if cls._warm_failures >= cls.MAX_WARMUP_FAILURES:
+            cls._warm_failures = 0
+            logger.info("[SSG] 차단 해제 — 워밍업 재시도")
+        return False
+
+    @classmethod
     def _ensure_warm(cls) -> bool:
         """쿠키가 필요하면 워밍업한다. 사용 가능하면 True."""
         with cls._warm_lock:
+            # 차단 중에는 워밍업도 하지 않는다 (만료 시 카운터 리셋도 여기서)
+            if cls._is_blocked():
+                return False
             if not cls._needs_warm:
                 return True
             elapsed = time.monotonic() - cls._last_warm_at
@@ -417,8 +452,7 @@ class SSGCrawler(BaseCrawler):
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
         cls = SSGCrawler
         # 서킷 브레이커: 차단 판정 중에는 요청(과 요청 간격 대기) 없이 즉시 실패
-        # — 요청을 멈춰야 차단 점수 갱신이 끊겨 차단이 풀릴 기회가 생긴다
-        if time.monotonic() < cls._fast_fail_until:
+        if cls._is_blocked():
             raise Exception(self.BLOCK_FAST_FAIL_ERROR)
 
         fetch_url = self._rewrite_blocked_url(url)
