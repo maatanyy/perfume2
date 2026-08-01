@@ -89,7 +89,7 @@ STUB_HTML = "<html><body><p>일시적 오류</p>" + "<!--" + "x" * 80_000 + "-->
 def test_stub_page_triggers_one_refetch(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     monkeypatch.setattr(ShinsegaeCrawler, "DEGRADED_RETRY_DELAY", 0.0)
     pages = [STUB_HTML, NORMAL_HTML]
     calls = []
@@ -107,7 +107,7 @@ def test_stub_page_triggers_one_refetch(monkeypatch):
 def test_normal_page_not_refetched(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     calls = []
 
     def fake_fetch(self, url, wait_time=2):
@@ -124,7 +124,7 @@ def test_persistent_stub_returns_stub_not_error(monkeypatch):
     기존처럼 '추출실패'로 남겨야 한다 (오류로 격상하면 안 됨)."""
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     monkeypatch.setattr(ShinsegaeCrawler, "DEGRADED_RETRY_DELAY", 0.0)
     monkeypatch.setattr(
         BaseCrawler, "fetch_page", lambda self, url, wait_time=2: STUB_HTML
@@ -137,7 +137,7 @@ def test_persistent_stub_returns_stub_not_error(monkeypatch):
 def test_none_response_not_refetched(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     calls = []
 
     def fake_fetch(self, url, wait_time=2):
@@ -155,7 +155,7 @@ def test_request_interval_enforced(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
     monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: NORMAL_HTML)
-    monkeypatch.setattr(ShinsegaeCrawler, "MIN_REQUEST_INTERVAL", 0.3)
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.3)
     monkeypatch.setattr(ShinsegaeCrawler, "_last_fetch_at", 0.0)
 
     a, b = ShinsegaeCrawler(), ShinsegaeCrawler()
@@ -163,3 +163,44 @@ def test_request_interval_enforced(monkeypatch):
     a.fetch_page("http://t/1")
     b.fetch_page("http://t/2")
     assert time.monotonic() - start >= 0.3
+
+
+# --- 적응형 요청 간격 ---
+# 고정 1초 간격은 안전하지만 느리다 (12분56초 → 29분30초). 사이트가 멀쩡할
+# 때는 빠르게 가고, 축소 페이지가 나타나면 그때만 간격을 넓힌 뒤 서서히
+# 원래대로 돌아온다.
+
+def test_starts_at_base_interval(monkeypatch):
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", ShinsegaeCrawler.MIN_REQUEST_INTERVAL)
+    assert ShinsegaeCrawler._current_interval == ShinsegaeCrawler.MIN_REQUEST_INTERVAL
+    assert ShinsegaeCrawler.MIN_REQUEST_INTERVAL < 1.0   # 고정 1초보다 빨라야 한다
+
+
+def test_degraded_response_widens_interval(monkeypatch):
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.3)
+    monkeypatch.setattr(ShinsegaeCrawler, "_good_streak", 0)
+    ShinsegaeCrawler._note_degraded()
+    assert ShinsegaeCrawler._current_interval > 0.3
+
+
+def test_interval_capped(monkeypatch):
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.3)
+    for _ in range(20):
+        ShinsegaeCrawler._note_degraded()
+    assert ShinsegaeCrawler._current_interval <= ShinsegaeCrawler.MAX_REQUEST_INTERVAL
+
+
+def test_good_streak_decays_interval(monkeypatch):
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 2.0)
+    monkeypatch.setattr(ShinsegaeCrawler, "_good_streak", 0)
+    for _ in range(ShinsegaeCrawler.DECAY_AFTER_GOOD * 3):
+        ShinsegaeCrawler._note_good()
+    assert ShinsegaeCrawler._current_interval < 2.0
+
+
+def test_interval_never_below_base(monkeypatch):
+    monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", ShinsegaeCrawler.MIN_REQUEST_INTERVAL)
+    monkeypatch.setattr(ShinsegaeCrawler, "_good_streak", 0)
+    for _ in range(200):
+        ShinsegaeCrawler._note_good()
+    assert ShinsegaeCrawler._current_interval >= ShinsegaeCrawler.MIN_REQUEST_INTERVAL

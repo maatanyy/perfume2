@@ -41,12 +41,21 @@ class ShinsegaeCrawler(BaseCrawler):
     # 기록됐다 (같은 URL을 서버에서 단건 수집하면 성공). 요청 간격을 두고,
     # 축소 페이지를 받으면 1회 재요청한다. 판매종료 상품도 축소 페이지를
     # 주므로, 재요청 후에도 같으면 그대로 두어 '추출실패'로 남긴다.
-    MIN_REQUEST_INTERVAL = 1.0  # 초
+    # 간격은 적응형이다: 평소에는 짧게(0.3초) 가고, 축소 페이지가 나오면
+    # 그때만 넓혔다가 정상 응답이 쌓이면 원래대로 돌아온다. 고정 1초는
+    # 안전하지만 잡 시간을 13분 → 30분으로 늘렸다 (2026-08-01 실측).
+    MIN_REQUEST_INTERVAL = 0.3  # 초 (기본/하한)
+    MAX_REQUEST_INTERVAL = 2.0  # 초 (상한)
+    WIDEN_FACTOR = 2.0  # 축소 페이지 감지 시 간격 배수
+    DECAY_FACTOR = 0.7  # 회복 시 간격 축소 배수
+    DECAY_AFTER_GOOD = 20  # 정상 응답 N회마다 한 단계 회복
     DEGRADED_HTML_MAX = 150_000  # 정상 페이지는 ~340KB
     DEGRADED_RETRY_DELAY = 3.0  # 초
     PRICE_MARKER = "_bestPrice"
     _rate_lock = threading.Lock()
     _last_fetch_at = 0.0
+    _current_interval = MIN_REQUEST_INTERVAL
+    _good_streak = 0
 
     def __init__(self):
         super().__init__(use_selenium=False)
@@ -58,25 +67,48 @@ class ShinsegaeCrawler(BaseCrawler):
             and self.PRICE_MARKER not in html
         )
 
+    @classmethod
+    def _note_degraded(cls):
+        """축소 페이지 감지 — 간격을 넓힌다 (상한까지)."""
+        cls._good_streak = 0
+        cls._current_interval = min(
+            cls.MAX_REQUEST_INTERVAL, cls._current_interval * cls.WIDEN_FACTOR
+        )
+
+    @classmethod
+    def _note_good(cls):
+        """정상 응답 — 일정 횟수마다 간격을 원래대로 좁힌다 (하한까지)."""
+        cls._good_streak += 1
+        if cls._good_streak >= cls.DECAY_AFTER_GOOD:
+            cls._good_streak = 0
+            cls._current_interval = max(
+                cls.MIN_REQUEST_INTERVAL, cls._current_interval * cls.DECAY_FACTOR
+            )
+
     def _gated_fetch(self, url: str, wait_time: int) -> Optional[str]:
         cls = ShinsegaeCrawler
         with cls._rate_lock:
-            wait = cls.MIN_REQUEST_INTERVAL - (time.monotonic() - cls._last_fetch_at)
+            wait = cls._current_interval - (time.monotonic() - cls._last_fetch_at)
             if wait > 0:
                 time.sleep(wait)
             cls._last_fetch_at = time.monotonic()
         return super().fetch_page(url, wait_time)
 
     def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+        cls = ShinsegaeCrawler
         html = self._gated_fetch(url, wait_time)
         if not self._looks_degraded(html):
+            cls._note_good()
             return html
+        cls._note_degraded()
         logger.warning(
-            f"[신세계] 축소 페이지 감지({len(html)}B) — {self.DEGRADED_RETRY_DELAY}초 후 재요청"
+            f"[신세계] 축소 페이지 감지({len(html)}B) — 간격 {cls._current_interval:.1f}초로 조정, "
+            f"{self.DEGRADED_RETRY_DELAY}초 후 재요청"
         )
         time.sleep(self.DEGRADED_RETRY_DELAY)
         retry_html = self._gated_fetch(url, wait_time)
         if retry_html and not self._looks_degraded(retry_html):
+            cls._note_good()
             return retry_html
         return retry_html or html
 
