@@ -103,6 +103,9 @@ class SSGCrawler(BaseCrawler):
         "SSG 차단 감지 — 브라우저 쿠키 워밍업 반복 실패, 남은 SSG 요청 생략"
     )
     _fast_fail_until = 0.0
+    # 403 연속 이 횟수 전에는 쿠키를 버리지 않고 냉각 후 재시도한다
+    MAX_403_BEFORE_REWARM = 3
+    _consecutive_403 = 0
 
     # 브라우저 쿠키 워밍업 (2026-08-01 실측): SSG 상품 페이지가 Akamai 센서
     # 쿠키(_abck 등)를 요구하도록 바뀌어 순수 HTTP는 첫 요청부터 403이다.
@@ -372,6 +375,13 @@ class SSGCrawler(BaseCrawler):
         cls._warm_ua = data.get("ua")
 
     @classmethod
+    def seconds_until_ready(cls) -> int:
+        """차단 해제까지 남은 초. 잡 말미 재시도 패스가 이만큼 기다렸다가
+        재시도하면 차단 구간에 스킵된 항목을 회복할 수 있다."""
+        remaining = cls._fast_fail_until - time.monotonic()
+        return int(remaining) if remaining > 0 else 0
+
+    @classmethod
     def _is_blocked(cls) -> bool:
         """차단 중인지. 만료됐으면 실패 카운터를 리셋해 다시 기회를 준다
         (리셋하지 않으면 이후 실패 1회마다 재차단이 반복된다)."""
@@ -428,14 +438,29 @@ class SSGCrawler(BaseCrawler):
                     url, timeout=self.HTTP_TIMEOUT, headers=headers
                 )
             if response.status_code == 403:
-                # 센서 쿠키 만료/무효 — 다음 요청 전에 재워밍업
-                cls._needs_warm = True
-                logger.warning(f"[SSG] HTTP 403 (쿠키 만료 추정): {url[:60]}")
+                # 403이 곧 쿠키 만료는 아니다 — 요청이 몰리면 일시적으로도
+                # 403이 온다. 그때 쿠키를 버리고 브라우저를 다시 띄우면,
+                # 이미 차단 중이라 워밍업까지 403을 받아 실패가 연쇄된다
+                # (2026-08-01 실측: 152건 스킵). 연속 N회 전에는 냉각 후
+                # 같은 쿠키로 재시도한다.
+                cls._consecutive_403 += 1
+                cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+                if cls._consecutive_403 >= cls.MAX_403_BEFORE_REWARM:
+                    cls._needs_warm = True
+                    logger.warning(
+                        f"[SSG] 403 연속 {cls._consecutive_403}회 — 쿠키 만료 판정, 재워밍업"
+                    )
+                else:
+                    logger.warning(
+                        f"[SSG] HTTP 403 ({cls._consecutive_403}/{cls.MAX_403_BEFORE_REWARM}) "
+                        f"— 냉각 후 같은 쿠키로 재시도: {url[:50]}"
+                    )
                 return None
             if response.status_code != 200:
                 # 429 등은 레이트리밋 — 쿠키는 유효하므로 냉각으로 회복
                 logger.warning(f"[SSG] HTTP {response.status_code}: {url[:60]}")
                 return None
+            cls._consecutive_403 = 0
             return response.text
         except Exception as e:
             logger.warning(f"[SSG] 요청 실패: {e}")

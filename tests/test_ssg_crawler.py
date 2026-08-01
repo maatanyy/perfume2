@@ -19,6 +19,7 @@ def _no_rate_limit(monkeypatch):
     monkeypatch.setattr(SSGCrawler, "_warm_failures", 0)
     monkeypatch.setattr(SSGCrawler, "_last_warm_at", 0.0)
     monkeypatch.setattr(SSGCrawler, "_warm_ua", None)
+    monkeypatch.setattr(SSGCrawler, "_consecutive_403", 0)
 
 HTML_SALE_WITH_DELIVERY = """
 <html><body>
@@ -439,16 +440,6 @@ def test_warm_reused_across_requests(monkeypatch):
     assert len(warm_calls) == 1     # 워밍업은 1회만
 
 
-def test_403_triggers_rewarm(monkeypatch):
-    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 403, 200])
-    c = SSGCrawler()
-    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
-    c._http_get(url.format(1))      # 200 (워밍업 1회)
-    c._http_get(url.format(2))      # 403 → 쿠키 만료 판정
-    c._http_get(url.format(3))      # 재워밍업 후 200
-    assert len(warm_calls) == 2
-
-
 def test_repeated_warmup_failure_trips_circuit_breaker(monkeypatch):
     monkeypatch.setattr(SSGCrawler, "MAX_WARMUP_FAILURES", 2)
     _, warm_calls = _patch_warmup(
@@ -611,3 +602,64 @@ def test_failure_counter_resets_after_block_expires(monkeypatch):
     assert not SSGCrawler._is_blocked()
     assert c._http_get(url) is not None    # 이어서 성공
     assert len(warm_calls) == 4
+
+
+# --- 403 즉시 재워밍업 → 냉각 후 재시도로 완화 ---
+# 2026-08-01 실측: 403이 나올 때마다 쿠키를 버리고 브라우저를 다시 띄웠는데,
+# 그 시점엔 이미 차단 상태(워밍업도 403 페이지 2,582B 수신)라 실패가 연쇄돼
+# 5분 차단 → 152건 스킵으로 이어졌다. 403은 쿠키 만료가 아니라 일시적
+# 레이트리밋일 수 있으므로, 연속 N회 전에는 냉각 후 같은 쿠키로 재시도한다.
+
+def test_single_403_does_not_rewarm(monkeypatch):
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 403, 200])
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    c._http_get(url.format(1))
+    c._http_get(url.format(2))      # 403 — 쿠키는 유지
+    assert SSGCrawler._needs_warm is False
+    c._http_get(url.format(3))
+    assert len(warm_calls) == 1     # 워밍업은 최초 1회뿐
+
+
+def test_consecutive_403s_trigger_rewarm(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "MAX_403_BEFORE_REWARM", 3)
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 403, 403, 403, 200])
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    for i in range(4):
+        c._http_get(url.format(i))
+    assert SSGCrawler._needs_warm is True    # 연속 3회 → 쿠키 만료로 판정
+    c._http_get(url.format(9))
+    assert len(warm_calls) == 2
+
+
+def test_success_resets_403_streak(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "MAX_403_BEFORE_REWARM", 3)
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 403, 403, 200, 403, 403])
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    for i in range(6):
+        c._http_get(url.format(i))
+    assert SSGCrawler._needs_warm is False   # 중간 성공이 연속 카운트를 끊음
+    assert len(warm_calls) == 1
+
+
+def test_403_sets_cooldown(monkeypatch):
+    """403 후 다음 요청은 냉각을 거쳐 나가야 한다 (즉시 재요청 금지)."""
+    monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 5.0)
+    monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
+    _patch_warmup(monkeypatch, statuses=[403])
+    import time
+
+    SSGCrawler()._http_get("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1")
+    assert SSGCrawler._cooldown_until > time.monotonic()
+
+
+def test_seconds_until_ready_reports_block_remaining(monkeypatch):
+    """잡 말미 재시도 패스가 차단 해제를 기다릴 수 있도록 남은 시간을 알린다."""
+    import time
+
+    assert SSGCrawler.seconds_until_ready() == 0
+    monkeypatch.setattr(SSGCrawler, "_fast_fail_until", time.monotonic() + 42)
+    remaining = SSGCrawler.seconds_until_ready()
+    assert 40 <= remaining <= 43

@@ -505,6 +505,25 @@ class CrawlingEngineV2:
 
         return batch_results
 
+    # 재시도 패스에서 차단 해제를 기다릴 최대 시간 (초)
+    RETRY_MAX_BLOCK_WAIT = 360
+
+    def _sleep(self, seconds: float):
+        time.sleep(seconds)
+
+    def _block_wait_seconds(self, crawler) -> int:
+        """크롤러가 차단 중이면 대기해야 할 초 (상한 적용). 없으면 0."""
+        getter = getattr(crawler, "seconds_until_ready", None)
+        if not callable(getter):
+            return 0
+        try:
+            remaining = int(getter())
+        except Exception:
+            return 0
+        if remaining <= 0:
+            return 0
+        return min(remaining, self.RETRY_MAX_BLOCK_WAIT)
+
     def _retry_failed_prices(self, job_id: int, results: List[Dict], stats: JobStats):
         """error 상태 URL을 잡 말미에 한 번 더 시도한다.
 
@@ -524,6 +543,7 @@ class CrawlingEngineV2:
 
         self._add_log(job_id, "INFO", f"오류 {len(targets)}건 재시도 패스 시작")
         recovered = 0
+        waited_for = set()
         for entry in targets:
             if self.job_cancelled.get(job_id, False):
                 break
@@ -532,6 +552,19 @@ class CrawlingEngineV2:
                 crawler = crawler_factory.get_crawler_by_url(url)
                 if crawler is None:
                     continue
+                # 크롤러가 차단 해제를 기다리는 중이면 한 번만 기다렸다가
+                # 진행한다 — 차단 중에 재시도하면 전부 그대로 실패한다
+                # (2026-08-01 실측: SSG 152건이 회복되지 못함)
+                key = type(crawler).__name__
+                if key not in waited_for:
+                    waited_for.add(key)
+                    wait = self._block_wait_seconds(crawler)
+                    if wait:
+                        self._add_log(
+                            job_id, "INFO",
+                            f"{key} 차단 해제까지 {wait}초 대기 후 재시도",
+                        )
+                        self._sleep(wait)
                 data = crawler.crawl_price(url)
             except Exception as e:
                 logger.debug(f"재시도 실패 {url[:60]}: {e}")
