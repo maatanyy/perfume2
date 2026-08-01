@@ -1,12 +1,18 @@
-from flask import Flask
-from flask_login import LoginManager
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from config import config
-from database import db
-import os
-import logging
-import atexit
+from dotenv import load_dotenv
+
+# config를 읽기 전에 .env를 환경변수로 올린다 — 이 호출이 없으면 .env에
+# 적어둔 설정(SSG_PROXY 등)이 조용히 무시된다 (2026-08-01 실측).
+load_dotenv()
+
+from flask import Flask  # noqa: E402
+from flask_login import LoginManager  # noqa: E402
+from flask_limiter import Limiter  # noqa: E402
+from flask_limiter.util import get_remote_address  # noqa: E402
+from config import config  # noqa: E402
+from database import db  # noqa: E402
+import os  # noqa: E402
+import logging  # noqa: E402
+import atexit  # noqa: E402
 
 
 logging.basicConfig(

@@ -11,9 +11,15 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
-from crawlers.ssg_crawler import SSGCrawler
+from dotenv import load_dotenv  # noqa: E402
+
+# 앱과 동일하게 .env를 읽어야 SSG_PROXY 설정이 진단에도 반영된다
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+from crawlers.ssg_crawler import SSGCrawler  # noqa: E402
 
 ITEM_IDS = ["1000860342112", "1000648733689", "1000682706640"]
 URL = "https://www.ssg.com/item/itemView.ssg?itemId={}"
