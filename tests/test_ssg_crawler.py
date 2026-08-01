@@ -11,6 +11,8 @@ def _no_rate_limit(monkeypatch):
     새지 않도록 기본 0으로 초기화.
     (요청 간격/냉각 자체를 검증하는 테스트는 개별적으로 값을 덮어쓴다)"""
     monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.0)
+    monkeypatch.setattr(SSGCrawler, "_current_interval", 0.0)
+    monkeypatch.setattr(SSGCrawler, "_good_streak", 0)
     monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
     monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
     monkeypatch.setattr(SSGCrawler, "_fast_fail_until", 0.0)
@@ -171,7 +173,7 @@ def test_fetch_page_rate_limited(monkeypatch):
     import time
 
     monkeypatch.setattr(SSGCrawler, "_http_get", lambda self, url: "<html></html>")
-    monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.3)
+    monkeypatch.setattr(SSGCrawler, "_current_interval", 0.3)
     monkeypatch.setattr(SSGCrawler, "_last_fetch_at", 0.0)
 
     a, b = SSGCrawler(), SSGCrawler()
@@ -663,3 +665,59 @@ def test_seconds_until_ready_reports_block_remaining(monkeypatch):
     monkeypatch.setattr(SSGCrawler, "_fast_fail_until", time.monotonic() + 42)
     remaining = SSGCrawler.seconds_until_ready()
     assert 40 <= remaining <= 43
+
+
+# --- 적응형 요청 간격/냉각 (속도 개선) ---
+# 고정 3초 간격은 882 URL 기준 44분이 요청 대기로만 쓰인다. 실측상 3초는
+# 안전하고 1.5초는 11건 만에 429였으므로, 3초에서 시작해 정상 응답이 충분히
+# 쌓였을 때만 조금씩(0.25초) 내려가고 403/429가 나오면 즉시 넓힌다.
+# 냉각도 첫 403은 짧게(10초), 반복될수록 길게 잡아 불필요한 정지를 줄인다.
+
+def _reset_adaptive(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "_current_interval", SSGCrawler.START_REQUEST_INTERVAL)
+    monkeypatch.setattr(SSGCrawler, "_good_streak", 0)
+
+
+def test_starts_at_proven_safe_interval(monkeypatch):
+    _reset_adaptive(monkeypatch)
+    assert SSGCrawler.START_REQUEST_INTERVAL == 3.0        # 실측으로 안전한 값
+    assert SSGCrawler.MIN_REQUEST_INTERVAL < 3.0           # 하한은 더 낮게
+    assert SSGCrawler._current_interval == 3.0
+
+
+def test_interval_probes_down_only_after_long_clean_streak(monkeypatch):
+    _reset_adaptive(monkeypatch)
+    for _ in range(SSGCrawler.PROBE_AFTER_GOOD - 1):
+        SSGCrawler._note_good()
+    assert SSGCrawler._current_interval == 3.0             # 아직 그대로
+    SSGCrawler._note_good()
+    assert SSGCrawler._current_interval < 3.0              # 한 단계 내려감
+
+
+def test_interval_never_below_floor(monkeypatch):
+    _reset_adaptive(monkeypatch)
+    for _ in range(SSGCrawler.PROBE_AFTER_GOOD * 60):
+        SSGCrawler._note_good()
+    assert SSGCrawler._current_interval >= SSGCrawler.MIN_REQUEST_INTERVAL
+
+
+def test_block_widens_interval_immediately(monkeypatch):
+    _reset_adaptive(monkeypatch)
+    monkeypatch.setattr(SSGCrawler, "_current_interval", 2.0)
+    SSGCrawler._note_blocked()
+    assert SSGCrawler._current_interval > 2.0
+    for _ in range(20):
+        SSGCrawler._note_blocked()
+    assert SSGCrawler._current_interval <= SSGCrawler.MAX_REQUEST_INTERVAL
+
+
+def test_cooldown_grows_with_consecutive_403s(monkeypatch):
+    # autouse 픽스처가 냉각을 0으로 낮추므로 실제 상한을 복원해 검증한다
+    monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 20.0)
+    monkeypatch.setattr(SSGCrawler, "_consecutive_403", 1)
+    first = SSGCrawler._cooldown_seconds()
+    monkeypatch.setattr(SSGCrawler, "_consecutive_403", 3)
+    third = SSGCrawler._cooldown_seconds()
+    assert first < third
+    assert first <= 10                                     # 첫 403은 짧게
+    assert third <= SSGCrawler.RATE_LIMIT_COOLDOWN         # 상한은 기존 값

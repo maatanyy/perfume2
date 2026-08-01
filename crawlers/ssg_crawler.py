@@ -74,7 +74,17 @@ class SSGCrawler(BaseCrawler):
     # shinsegaemall도 짧은 시간에 요청이 몰리면 일시 차단(429)된다.
     # 2026-08-01 실측: 1.5초 간격은 11건 후 429, 3초 간격은 20건 중 1건만
     # 429(냉각으로 회복). 클래스 전역 최소 요청 간격을 강제한다.
-    MIN_REQUEST_INTERVAL = 3.0  # 초
+    # 간격은 적응형이다. 실측(2026-08-01): 3초는 20건 중 429 1건, 1.5초는
+    # 11건 만에 429. 그래서 검증된 3초에서 시작해, 정상 응답이 충분히 쌓였을
+    # 때만 0.25초씩 조심스럽게 내리고, 403/429가 나오면 즉시 1.5배로 넓힌다.
+    START_REQUEST_INTERVAL = 3.0  # 초 (시작값 — 실측으로 안전)
+    MIN_REQUEST_INTERVAL = 2.0  # 초 (하한)
+    MAX_REQUEST_INTERVAL = 6.0  # 초 (상한)
+    PROBE_STEP = 0.25  # 초씩 내려간다
+    PROBE_AFTER_GOOD = 40  # 정상 응답 N회마다 한 단계
+    WIDEN_FACTOR = 1.5
+    _current_interval = START_REQUEST_INTERVAL
+    _good_streak = 0
     # 그래도 일시 차단이 걸리면(롤링 윈도우 추정) 냉각 후 재시도해야 풀린다
     RATE_LIMIT_COOLDOWN = 20.0  # 초
     _rate_lock = threading.Lock()
@@ -375,6 +385,29 @@ class SSGCrawler(BaseCrawler):
         cls._warm_ua = data.get("ua")
 
     @classmethod
+    def _note_good(cls):
+        """정상 응답 — 충분히 쌓였을 때만 간격을 한 단계 내린다."""
+        cls._good_streak += 1
+        if cls._good_streak >= cls.PROBE_AFTER_GOOD:
+            cls._good_streak = 0
+            cls._current_interval = max(
+                cls.MIN_REQUEST_INTERVAL, cls._current_interval - cls.PROBE_STEP
+            )
+
+    @classmethod
+    def _note_blocked(cls):
+        """403/429 — 간격을 즉시 넓힌다 (상한까지)."""
+        cls._good_streak = 0
+        cls._current_interval = min(
+            cls.MAX_REQUEST_INTERVAL, cls._current_interval * cls.WIDEN_FACTOR
+        )
+
+    @classmethod
+    def _cooldown_seconds(cls) -> float:
+        """403이 반복될수록 냉각을 길게. 첫 403은 짧게 끊어 시간을 아낀다."""
+        return min(cls.RATE_LIMIT_COOLDOWN, 10.0 * max(1, cls._consecutive_403))
+
+    @classmethod
     def seconds_until_ready(cls) -> int:
         """차단 해제까지 남은 초. 잡 말미 재시도 패스가 이만큼 기다렸다가
         재시도하면 차단 구간에 스킵된 항목을 회복할 수 있다."""
@@ -444,7 +477,8 @@ class SSGCrawler(BaseCrawler):
                 # (2026-08-01 실측: 152건 스킵). 연속 N회 전에는 냉각 후
                 # 같은 쿠키로 재시도한다.
                 cls._consecutive_403 += 1
-                cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+                cls._note_blocked()
+                cls._cooldown_until = time.monotonic() + cls._cooldown_seconds()
                 if cls._consecutive_403 >= cls.MAX_403_BEFORE_REWARM:
                     cls._needs_warm = True
                     logger.warning(
@@ -457,10 +491,12 @@ class SSGCrawler(BaseCrawler):
                     )
                 return None
             if response.status_code != 200:
-                # 429 등은 레이트리밋 — 쿠키는 유효하므로 냉각으로 회복
+                # 429 등은 레이트리밋 — 쿠키는 유효하므로 간격을 넓히고 냉각
+                cls._note_blocked()
                 logger.warning(f"[SSG] HTTP {response.status_code}: {url[:60]}")
                 return None
             cls._consecutive_403 = 0
+            cls._note_good()
             return response.text
         except Exception as e:
             logger.warning(f"[SSG] 요청 실패: {e}")
@@ -486,7 +522,7 @@ class SSGCrawler(BaseCrawler):
         with cls._rate_lock:
             now = time.monotonic()
             wait = max(
-                cls.MIN_REQUEST_INTERVAL - (now - cls._last_fetch_at),
+                cls._current_interval - (now - cls._last_fetch_at),
                 cls._cooldown_until - now,
             )
             if wait > 0:
@@ -496,8 +532,11 @@ class SSGCrawler(BaseCrawler):
         html = self._http_get(fetch_url)
         if html is None:
             # 일시 차단(429 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
+            # (_http_get이 이미 상황에 맞는 냉각을 잡았으면 그 값을 유지한다)
             with cls._rate_lock:
-                cls._cooldown_until = time.monotonic() + cls.RATE_LIMIT_COOLDOWN
+                cls._cooldown_until = max(
+                    cls._cooldown_until, time.monotonic() + cls._cooldown_seconds()
+                )
             if fetch_url != url:
                 # 레이트리밋은 일시적일 수 있으므로 crawl_price의 재시도(백오프)에 맡긴다
                 raise Exception(self.REWRITE_FAIL_ERROR)
