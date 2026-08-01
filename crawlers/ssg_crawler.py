@@ -2,8 +2,11 @@
 
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
+import os
+import platform
 import re
 import logging
 import threading
@@ -68,10 +71,10 @@ class SSGCrawler(BaseCrawler):
         "SSG 요청 실패(레이트리밋/봇 차단 추정) — shinsegaemall 우회 요청도 실패, 잠시 후 재실행 필요"
     )
 
-    # shinsegaemall도 짧은 시간에 요청이 몰리면 일시 차단(429)된다 (2026-07
-    # 실측: 0.7초 간격 연속 요청 시 ~17건 후 차단). 롯데와 같은 방식으로
-    # 클래스 전역 최소 요청 간격을 강제한다.
-    MIN_REQUEST_INTERVAL = 1.5  # 초
+    # shinsegaemall도 짧은 시간에 요청이 몰리면 일시 차단(429)된다.
+    # 2026-08-01 실측: 1.5초 간격은 11건 후 429, 3초 간격은 20건 중 1건만
+    # 429(냉각으로 회복). 클래스 전역 최소 요청 간격을 강제한다.
+    MIN_REQUEST_INTERVAL = 3.0  # 초
     # 그래도 일시 차단이 걸리면(롤링 윈도우 추정) 냉각 후 재시도해야 풀린다
     RATE_LIMIT_COOLDOWN = 20.0  # 초
     _rate_lock = threading.Lock()
@@ -93,13 +96,36 @@ class SSGCrawler(BaseCrawler):
     # 점수가 갱신되는 방식이라, 차단된 상태로 잡 전체(수백 요청)를 계속
     # 돌리면 차단이 영원히 안 풀리는 악순환이 된다. 연속 403이 임계치에
     # 달하면 일정 시간 요청 자체를 생략하고 명확한 오류로 빠르게 기록한다.
-    BLOCK_STREAK_THRESHOLD = 10
     BLOCK_FAST_FAIL_DURATION = 1800.0  # 초 (30분)
     BLOCK_FAST_FAIL_ERROR = (
-        "SSG IP 차단 감지 — 남은 SSG 요청 생략 (차단이 풀리도록 수 시간 뒤 재실행 권장)"
+        "SSG 차단 감지 — 브라우저 쿠키 워밍업 반복 실패, 남은 SSG 요청 생략"
     )
-    _consecutive_403 = 0
     _fast_fail_until = 0.0
+
+    # 브라우저 쿠키 워밍업 (2026-08-01 실측): SSG 상품 페이지가 Akamai 센서
+    # 쿠키(_abck 등)를 요구하도록 바뀌어 순수 HTTP는 첫 요청부터 403이다.
+    # 실제 브라우저로 메인을 방문(마우스/스크롤 포함)해 센서 검증을 통과한
+    # 쿠키를 확보하면, 같은 쿠키+UA로 보내는 HTTP 요청이 200으로 열린다.
+    # headless로 얻은 쿠키는 거부되므로 headful로 띄운다 — 서버(디스플레이
+    # 없음)에서는 Xvfb 가상 디스플레이가 필요하다.
+    WARMUP_MAIN_URL = "https://shinsegaemall.ssg.com/"
+    WARMUP_ITEM_URL = (
+        "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1000860342112"
+    )
+    WARMUP_TIMEOUT_MS = 40_000
+    WARMUP_RESULT_TIMEOUT_S = 120
+    # 워밍업 자체가 무거우므로(브라우저 기동 ~25초) 최소 간격을 둔다
+    WARMUP_MIN_INTERVAL = 60.0  # 초
+    MAX_WARMUP_FAILURES = 3
+    _needs_warm = True
+    _warm_failures = 0
+    _last_warm_at = 0.0
+    _warm_ua = None
+    _warm_lock = threading.Lock()
+    # Playwright는 브라우저를 시작한 스레드에서만 조작 가능 — CJ와 같은
+    # 이유로 워밍업 전체를 전용 스레드 1개에 고정한다
+    _warm_executor = None
+    _virtual_display = None
 
     def __init__(self):
         super().__init__(use_selenium=False)
@@ -113,28 +139,155 @@ class SSGCrawler(BaseCrawler):
             cls._http_session = curl_requests.Session(impersonate="chrome")
         return cls._http_session
 
+    # --- 브라우저 쿠키 워밍업 ---
+
+    @classmethod
+    def _ensure_virtual_display(cls):
+        """서버(디스플레이 없는 Linux)에서 headful 브라우저를 띄우기 위한
+        Xvfb 가상 디스플레이. 맥/윈도우나 DISPLAY가 이미 있으면 불필요."""
+        if cls._virtual_display is not None:
+            return
+        if platform.system() != "Linux" or os.environ.get("DISPLAY"):
+            return
+        from pyvirtualdisplay import Display
+
+        cls._virtual_display = Display(visible=False, size=(1920, 1080))
+        cls._virtual_display.start()
+        logger.info("[SSG] Xvfb 가상 디스플레이 시작")
+
+    @classmethod
+    def _get_warm_executor(cls) -> ThreadPoolExecutor:
+        if cls._warm_executor is None:
+            cls._warm_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="ssg-warm"
+            )
+        return cls._warm_executor
+
+    @classmethod
+    def _run_warmup(cls) -> Optional[Dict]:
+        """브라우저를 띄워 센서 쿠키를 확보한다. {"cookies": [...], "ua": str}
+        또는 실패 시 None. 전용 스레드에서 실행된다."""
+        future = cls._get_warm_executor().submit(cls._warmup_in_browser_thread)
+        try:
+            return future.result(timeout=cls.WARMUP_RESULT_TIMEOUT_S)
+        except Exception as e:
+            logger.warning(f"[SSG] 워밍업 스레드 실패: {e}")
+            return None
+
+    @classmethod
+    def _warmup_in_browser_thread(cls) -> Optional[Dict]:
+        # 전용 스레드(_warm_executor) 안에서만 실행된다 — 직접 호출 금지.
+        from scrapling.fetchers import StealthySession
+
+        cls._ensure_virtual_display()
+        harvested: Dict = {}
+
+        def _browse(page):
+            page.goto(cls.WARMUP_MAIN_URL)
+            page.wait_for_timeout(3000)
+            # 센서에 사람 흔적(마우스/스크롤) 공급 — 없으면 검증이 통과되지 않음
+            for x, y in ((200, 300), (400, 350), (600, 500)):
+                page.mouse.move(x, y)
+                page.wait_for_timeout(300)
+            page.mouse.wheel(0, 600)
+            page.wait_for_timeout(2500)
+            page.goto(cls.WARMUP_ITEM_URL)
+            try:
+                page.locator("em.ssg_price").first.wait_for(
+                    state="attached", timeout=12_000
+                )
+                harvested["ok"] = True
+            except Exception:
+                harvested["ok"] = False
+            harvested["cookies"] = page.context.cookies()
+            harvested["ua"] = page.evaluate("navigator.userAgent")
+            return page
+
+        session = None
+        try:
+            session = StealthySession(
+                headless=False, timeout=cls.WARMUP_TIMEOUT_MS, retries=1
+            )
+            session.start()
+            session.fetch(cls.WARMUP_ITEM_URL, page_action=_browse)
+        except Exception as e:
+            logger.warning(f"[SSG] 브라우저 워밍업 실패: {e}")
+            return None
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        if not harvested.get("ok") or not harvested.get("cookies"):
+            logger.warning("[SSG] 워밍업 브라우저가 상품 페이지를 열지 못함")
+            return None
+        return {"cookies": harvested["cookies"], "ua": harvested["ua"]}
+
+    @classmethod
+    def _apply_warm_cookies(cls, data: Dict):
+        from curl_cffi import requests as curl_requests
+
+        session = curl_requests.Session(impersonate="chrome")
+        for cookie in data["cookies"]:
+            try:
+                session.cookies.set(
+                    cookie["name"], cookie["value"], domain=cookie.get("domain", "")
+                )
+            except Exception:
+                continue
+        cls._http_session = session
+        cls._warm_ua = data.get("ua")
+
+    @classmethod
+    def _ensure_warm(cls) -> bool:
+        """쿠키가 필요하면 워밍업한다. 사용 가능하면 True."""
+        with cls._warm_lock:
+            if not cls._needs_warm:
+                return True
+            elapsed = time.monotonic() - cls._last_warm_at
+            if cls._last_warm_at and elapsed < cls.WARMUP_MIN_INTERVAL:
+                time.sleep(cls.WARMUP_MIN_INTERVAL - elapsed)
+            cls._last_warm_at = time.monotonic()
+            logger.info("[SSG] 브라우저 쿠키 워밍업 시작...")
+            data = cls._run_warmup()
+            if not data:
+                cls._warm_failures += 1
+                if cls._warm_failures >= cls.MAX_WARMUP_FAILURES:
+                    cls._fast_fail_until = (
+                        time.monotonic() + cls.BLOCK_FAST_FAIL_DURATION
+                    )
+                    logger.error(
+                        f"[SSG] 워밍업 {cls._warm_failures}회 연속 실패 — "
+                        f"{int(cls.BLOCK_FAST_FAIL_DURATION / 60)}분간 SSG 요청 생략"
+                    )
+                return False
+            cls._apply_warm_cookies(data)
+            cls._warm_failures = 0
+            cls._needs_warm = False
+            logger.info("[SSG] 쿠키 워밍업 완료")
+            return True
+
     def _http_get(self, url: str) -> Optional[str]:
         cls = SSGCrawler
+        if not cls._ensure_warm():
+            return None
+        headers = {"Accept-Language": "ko-KR,ko;q=0.9", "Referer": cls.WARMUP_MAIN_URL}
+        if cls._warm_ua:
+            # 센서 쿠키는 발급받은 브라우저의 UA와 함께 와야 유효하다
+            headers["User-Agent"] = cls._warm_ua
         try:
             with cls._http_lock:
                 response = self._get_http_session().get(
-                    url,
-                    timeout=self.HTTP_TIMEOUT,
-                    headers={"Accept-Language": "ko-KR,ko;q=0.9"},
+                    url, timeout=self.HTTP_TIMEOUT, headers=headers
                 )
-                if response.status_code == 403:
-                    cls._consecutive_403 += 1
-                    if cls._consecutive_403 >= cls.BLOCK_STREAK_THRESHOLD:
-                        cls._fast_fail_until = (
-                            time.monotonic() + cls.BLOCK_FAST_FAIL_DURATION
-                        )
-                        logger.error(
-                            f"[SSG] 연속 403 {cls._consecutive_403}회 — IP 차단 판정, "
-                            f"{int(cls.BLOCK_FAST_FAIL_DURATION / 60)}분간 SSG 요청 생략"
-                        )
-                elif response.status_code == 200:
-                    cls._consecutive_403 = 0
+            if response.status_code == 403:
+                # 센서 쿠키 만료/무효 — 다음 요청 전에 재워밍업
+                cls._needs_warm = True
+                logger.warning(f"[SSG] HTTP 403 (쿠키 만료 추정): {url[:60]}")
+                return None
             if response.status_code != 200:
+                # 429 등은 레이트리밋 — 쿠키는 유효하므로 냉각으로 회복
                 logger.warning(f"[SSG] HTTP {response.status_code}: {url[:60]}")
                 return None
             return response.text

@@ -13,8 +13,12 @@ def _no_rate_limit(monkeypatch):
     monkeypatch.setattr(SSGCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(SSGCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
     monkeypatch.setattr(SSGCrawler, "_cooldown_until", 0.0)
-    monkeypatch.setattr(SSGCrawler, "_consecutive_403", 0)
     monkeypatch.setattr(SSGCrawler, "_fast_fail_until", 0.0)
+    # 워밍업(실브라우저)이 단위 테스트에서 돌지 않도록 기본은 '워밍업 완료' 상태
+    monkeypatch.setattr(SSGCrawler, "_needs_warm", False)
+    monkeypatch.setattr(SSGCrawler, "_warm_failures", 0)
+    monkeypatch.setattr(SSGCrawler, "_last_warm_at", 0.0)
+    monkeypatch.setattr(SSGCrawler, "_warm_ua", None)
 
 HTML_SALE_WITH_DELIVERY = """
 <html><body>
@@ -331,78 +335,139 @@ def test_http_session_shared_across_instances(monkeypatch):
     assert len(count) == 1
 
 
-# --- IP 차단 서킷 브레이커 ---
-# Akamai 차단은 요청이 올 때마다 점수가 갱신되는 방식이라, 차단 중에도
-# 191개 상품 × 4~5 URL을 계속 요청하면 차단이 영원히 안 풀리는 악순환이
-# 된다 (2026-07-31 실측). 연속 403이 임계치에 달하면 일정 시간 요청 자체를
-# 생략하고 명확한 오류로 빠르게 기록한다.
-
-def _patch_curl_with_statuses(monkeypatch, statuses):
-    """statuses 순서대로 응답하는 가짜 curl 세션. 호출된 URL 목록을 반환."""
-    import curl_cffi.requests as curl_requests
-
-    calls = []
-
-    class _FakeSession:
-        def __init__(self, **kwargs):
-            pass
-
-        def get(self, url, timeout=None, **kwargs):
-            calls.append(url)
-            code = statuses.pop(0) if statuses else 403
-            # 200이면 가격 마크업 포함 (crawl_price의 짧은-HTML 재시도 회피 패딩)
-            text = HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
-            return type("R", (), {"status_code": code, "text": text})()
-
-    monkeypatch.setattr(curl_requests, "Session", _FakeSession)
-    monkeypatch.setattr(SSGCrawler, "_http_session", None)
-    return calls
-
-
-def test_consecutive_403_trips_circuit_breaker(monkeypatch):
-    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 3)
-    calls = _patch_curl_with_statuses(monkeypatch, [403, 403, 403])
-
-    c = SSGCrawler()
-    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
-    for i in range(3):
-        c.crawl_price(url.format(i), max_retries=1)
-    assert len(calls) == 3
-
-    # 임계치 도달 후에는 HTTP 요청 없이 즉시 명확한 오류
-    r = c.crawl_price(url.format(99), max_retries=1)
-    assert len(calls) == 3               # 추가 요청 없음
-    assert r["결과 상태"] == "error"
-    assert "차단 감지" in r["에러 발생"]
-
-
-def test_success_resets_403_streak(monkeypatch):
-    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 3)
-    calls = _patch_curl_with_statuses(monkeypatch, [403, 403, 200, 403, 403])
-
-    c = SSGCrawler()
-    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
-    for i in range(5):
-        c.crawl_price(url.format(i), max_retries=1)
-    # 중간 200이 streak을 리셋 → 차단 미발동, 5회 모두 실제 요청
-    assert len(calls) == 5
-    c.crawl_price(url.format(99), max_retries=1)
-    assert len(calls) == 6
-
+# --- 서킷 브레이커 만료 ---
+# 워밍업 반복 실패로 차단 판정이 나면 일정 시간 요청을 생략하고, 시간이
+# 지나면 다시 시도해야 한다 (수동 개입 없이 자동 회복).
 
 def test_circuit_breaker_expires(monkeypatch):
-    monkeypatch.setattr(SSGCrawler, "BLOCK_STREAK_THRESHOLD", 1)
+    import time
+
     monkeypatch.setattr(SSGCrawler, "BLOCK_FAST_FAIL_DURATION", 0.2)
-    calls = _patch_curl_with_statuses(monkeypatch, [403, 200])
+    monkeypatch.setattr(SSGCrawler, "MAX_WARMUP_FAILURES", 1)
+    holder, warm_calls = _patch_warmup(
+        monkeypatch, statuses=[200], warm_results=[False, True]
+    )
 
     c = SSGCrawler()
     url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
-    c.crawl_price(url, max_retries=1)    # 403 → 차단 발동
-    c.crawl_price(url, max_retries=1)    # 생략됨
-    assert len(calls) == 1
+    assert c._http_get(url) is None          # 워밍업 실패 → 차단 판정
+    with pytest.raises(Exception, match="차단 감지"):
+        c.fetch_page(url)                    # 요청 생략
+    assert len(warm_calls) == 1
 
-    import time
-    time.sleep(0.25)                     # 차단 만료
-    r = c.crawl_price(url, max_retries=1)
-    assert len(calls) == 2
-    assert r["결과 상태"] == "success"
+    time.sleep(0.25)                         # 차단 만료
+    assert c.fetch_page(url) is not None     # 재워밍업 후 정상
+    assert len(warm_calls) == 2
+
+
+# --- 브라우저 쿠키 워밍업 ---
+# 2026-08-01 실측: SSG 상품 페이지가 Akamai 센서 쿠키(_abck 등)를 요구하도록
+# 바뀌어 순수 HTTP는 항상 403. 실제 브라우저로 메인을 방문해 센서 검증을
+# 통과한 쿠키를 확보하면 같은 쿠키로 HTTP 요청이 200으로 열린다
+# (headful 필요 — headless로 얻은 쿠키는 거부됨).
+
+class _FakeCookieJar(dict):
+    def set(self, name, value, domain=None):
+        self[name] = value
+
+
+class _FakeCurlSession:
+    def __init__(self, statuses=None, **kwargs):
+        self.statuses = statuses if statuses is not None else []
+        self.cookies = _FakeCookieJar()
+        self.calls = []
+
+    def get(self, url, timeout=None, headers=None, **kwargs):
+        self.calls.append((url, headers or {}))
+        code = self.statuses.pop(0) if self.statuses else 200
+        text = HTML_SALE_WITH_DELIVERY + "<!--" + "x" * 2000 + "-->"
+        return type("R", (), {"status_code": code, "text": text})()
+
+
+def _patch_warmup(monkeypatch, statuses, warm_results=None):
+    """가짜 curl 세션 + 가짜 브라우저 워밍업. (session, warm_calls) 반환."""
+    import curl_cffi.requests as curl_requests
+
+    holder = {}
+
+    def _make_session(**kwargs):
+        holder["session"] = _FakeCurlSession(statuses=statuses)
+        return holder["session"]
+
+    monkeypatch.setattr(curl_requests, "Session", _make_session)
+    monkeypatch.setattr(SSGCrawler, "_http_session", None)
+    monkeypatch.setattr(SSGCrawler, "_needs_warm", True)
+    monkeypatch.setattr(SSGCrawler, "_warm_failures", 0)
+    monkeypatch.setattr(SSGCrawler, "_last_warm_at", 0.0)
+    monkeypatch.setattr(SSGCrawler, "WARMUP_MIN_INTERVAL", 0.0)
+
+    warm_calls = []
+    results = list(warm_results) if warm_results is not None else None
+
+    def fake_warm(cls):
+        warm_calls.append(1)
+        if results is not None and not results.pop(0):
+            return None
+        return {
+            "cookies": [{"name": "_abck", "value": "sensor-ok", "domain": ".ssg.com"}],
+            "ua": "Mozilla/5.0 (Warmed)",
+        }
+
+    monkeypatch.setattr(SSGCrawler, "_run_warmup", classmethod(fake_warm))
+    return holder, warm_calls
+
+
+def test_first_request_warms_cookies(monkeypatch):
+    holder, warm_calls = _patch_warmup(monkeypatch, statuses=[200])
+    c = SSGCrawler()
+    assert c._http_get("https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1")
+    assert len(warm_calls) == 1
+    session = holder["session"]
+    assert session.cookies.get("_abck") == "sensor-ok"
+    # 브라우저와 같은 UA로 요청해야 센서 쿠키가 유효하다
+    assert session.calls[0][1]["User-Agent"] == "Mozilla/5.0 (Warmed)"
+
+
+def test_warm_reused_across_requests(monkeypatch):
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 200, 200])
+    c = SSGCrawler()
+    for i in range(3):
+        c._http_get(f"https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={i}")
+    assert len(warm_calls) == 1     # 워밍업은 1회만
+
+
+def test_403_triggers_rewarm(monkeypatch):
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 403, 200])
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    c._http_get(url.format(1))      # 200 (워밍업 1회)
+    c._http_get(url.format(2))      # 403 → 쿠키 만료 판정
+    c._http_get(url.format(3))      # 재워밍업 후 200
+    assert len(warm_calls) == 2
+
+
+def test_repeated_warmup_failure_trips_circuit_breaker(monkeypatch):
+    monkeypatch.setattr(SSGCrawler, "MAX_WARMUP_FAILURES", 2)
+    _, warm_calls = _patch_warmup(
+        monkeypatch, statuses=[], warm_results=[False, False]
+    )
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1"
+    assert c._http_get(url) is None
+    assert c._http_get(url) is None
+    assert len(warm_calls) == 2
+    # 서킷 브레이커 발동 — 이후엔 요청/워밍업 없이 즉시 실패
+    with pytest.raises(Exception, match="차단 감지"):
+        c.fetch_page(url)
+    assert len(warm_calls) == 2
+
+
+def test_429_does_not_trigger_rewarm(monkeypatch):
+    """429는 레이트리밋(쿠키는 유효) — 냉각으로 풀리므로 재워밍업 불필요."""
+    _, warm_calls = _patch_warmup(monkeypatch, statuses=[200, 429, 200])
+    c = SSGCrawler()
+    url = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId={}"
+    c._http_get(url.format(1))
+    c._http_get(url.format(2))
+    c._http_get(url.format(3))
+    assert len(warm_calls) == 1

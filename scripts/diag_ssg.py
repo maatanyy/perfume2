@@ -1,47 +1,47 @@
-"""SSG 차단 상태 진단 CLI.
+"""SSG 크롤링 진단 CLI (브라우저 쿠키 워밍업 포함).
 
 사용법:
     venv/bin/python scripts/diag_ssg.py
 
-메인 페이지/상품 페이지를 curl_cffi(chrome 위장)로 1회씩 요청해
-현재 IP의 차단 상태를 판정한다. 실행 전 SSG 크롤링 잡이 돌고 있지
-않아야 정확하다 (잡의 요청이 차단을 계속 갱신함).
+실제 크롤러와 동일한 경로(브라우저 워밍업 → 쿠키 이식 → HTTP 수집)로
+상품 3건을 수집해 결과를 출력한다. 서버에서 Xvfb/pyvirtualdisplay 설치
+여부까지 함께 검증된다.
 """
 
+import os
 import sys
 
-from curl_cffi import requests as cr
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-ITEM_URL = "https://shinsegaemall.ssg.com/item/itemView.ssg?itemId=1000860342112"
-MAIN_URL = "https://shinsegaemall.ssg.com/"
+from crawlers.ssg_crawler import SSGCrawler
+
+ITEM_IDS = ["1000860342112", "1000648733689", "1000682706640"]
+URL = "https://www.ssg.com/item/itemView.ssg?itemId={}"
 
 
 def main():
-    try:
-        m = cr.get(MAIN_URL, impersonate="chrome", timeout=15)
-        print(f"메인 페이지: HTTP {m.status_code}")
-    except Exception as e:
-        print(f"메인 페이지: 요청 실패 ({e})")
-        sys.exit(1)
+    crawler = SSGCrawler()
+    ok = 0
+    for item_id in ITEM_IDS:
+        result = crawler.crawl_price(URL.format(item_id))
+        status = result["결과 상태"]
+        if status == "success":
+            ok += 1
+            print(
+                f"{item_id}: ✅ 판매가 {result['판매가']:,}원 "
+                f"배송비 {result['배송비']:,}원"
+            )
+        else:
+            print(f"{item_id}: ❌ {status} — {result.get('에러 발생', '')}")
 
-    try:
-        r = cr.get(
-            ITEM_URL,
-            impersonate="chrome",
-            timeout=15,
-            headers={"Accept-Language": "ko-KR,ko;q=0.9"},
-        )
-        print(f"상품 페이지: HTTP {r.status_code} (HTML {len(r.text)}바이트)")
-    except Exception as e:
-        print(f"상품 페이지: 요청 실패 ({e})")
-        sys.exit(1)
-
-    if r.status_code == 200 and len(r.text) > 100_000:
-        print("\n판정: ✅ 차단 해제됨 — SSG 크롤링 재시도 가능")
-    elif r.status_code == 403 and m.status_code == 200:
-        print("\n판정: ⛔ 상품 페이지만 차단 중 (IP 차단 지속) — 더 기다린 뒤 재실행")
+    print()
+    if ok == len(ITEM_IDS):
+        print("판정: ✅ 정상 — SSG 크롤링 실행 가능")
+    elif ok:
+        print(f"판정: ⚠️ 부분 성공 ({ok}/{len(ITEM_IDS)}) — 레이트리밋 가능성, 재실행 권장")
     else:
-        print("\n판정: ⛔ 전면 차단 중 — 더 기다린 뒤 재실행")
+        print("판정: ⛔ 전부 실패 — 아래 로그의 워밍업 실패 사유 확인 필요")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
