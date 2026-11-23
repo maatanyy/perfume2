@@ -27,7 +27,7 @@ def main():
             continue
         print(f"\n=== [{crawler.__class__.__name__}] {url[:80]}")
         try:
-            result = crawler.crawl_price(url, auto_close=True)
+            result = crawler.crawl_price(url)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         except Exception as e:
             print(f"오류: {e}")

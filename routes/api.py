@@ -310,30 +310,3 @@ def force_garbage_collection():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-@api_bp.route("/system/browser-pool")
-@login_required
-@approved_required
-def get_browser_pool_status():
-    try:
-        from utils.browser_pool import get_browser_pool
-        pool = get_browser_pool()
-        return jsonify(pool.get_stats())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@api_bp.route("/system/browser-pool/reset", methods=["POST"])
-@login_required
-@approved_required
-def reset_browser_pool():
-    if not current_user.is_admin:
-        return jsonify({"error": "관리자 권한이 필요합니다."}), 403
-    try:
-        import gc
-        from utils.browser_pool import shutdown_browser_pool
-        shutdown_browser_pool()
-        gc.collect()
-        return jsonify({"success": True, "message": "브라우저 풀이 리셋되었습니다."})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500

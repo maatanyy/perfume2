@@ -92,7 +92,7 @@ def test_fetch_warms_up_main_page_once(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html>ok</html>"
+        BaseCrawler, "fetch_page", lambda self, url: "<html>ok</html>"
     )
     monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
@@ -112,7 +112,7 @@ def test_fetch_failure_resets_warmup(monkeypatch):
 
     results = [None, "<html>ok</html>"]
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
+        BaseCrawler, "fetch_page", lambda self, url: results.pop(0)
     )
     monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(LotteCrawler, "RATE_LIMIT_COOLDOWN", 0.0)
@@ -131,7 +131,7 @@ def test_warmup_failure_does_not_block_fetch(monkeypatch):
     from crawlers.base_crawler import BaseCrawler
 
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html>ok</html>"
+        BaseCrawler, "fetch_page", lambda self, url: "<html>ok</html>"
     )
     monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
@@ -152,7 +152,7 @@ def test_fetch_page_rate_limited(monkeypatch):
     import time
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: "<html></html>")
+    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url: "<html></html>")
     monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.3)
     monkeypatch.setattr(LotteCrawler, "_last_fetch_at", 0.0)
 
@@ -173,7 +173,7 @@ def test_fetch_failure_triggers_cooldown(monkeypatch):
 
     results = [None, "<html>ok</html>"]
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: results.pop(0)
+        BaseCrawler, "fetch_page", lambda self, url: results.pop(0)
     )
     monkeypatch.setattr(LotteCrawler, "MIN_REQUEST_INTERVAL", 0.0)
     monkeypatch.setattr(LotteCrawler, "RATE_LIMIT_COOLDOWN", 0.4)

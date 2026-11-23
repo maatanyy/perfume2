@@ -57,7 +57,7 @@ class LotteCrawler(BaseCrawler):
     WARMUP_URL = "https://www.lotteimall.com/main/viewMain.lotte"
 
     def __init__(self):
-        super().__init__(use_selenium=False)
+        super().__init__()
         self._warmed = False
 
     def _warm_up(self):
@@ -69,7 +69,7 @@ class LotteCrawler(BaseCrawler):
             logger.debug(f"[롯데] 메인 워밍업 실패(무시): {e}")
         self._warmed = True
 
-    def fetch_page(self, url: str, wait_time: int = 2):
+    def fetch_page(self, url: str):
         cls = LotteCrawler
         with cls._rate_lock:
             now = time.monotonic()
@@ -82,7 +82,7 @@ class LotteCrawler(BaseCrawler):
             cls._last_fetch_at = time.monotonic()
         if not self._warmed:
             self._warm_up()
-        html = super().fetch_page(url, wait_time)
+        html = super().fetch_page(url)
         if html is None:
             # 일시 차단(403 추정) — 다음 요청(재시도 포함)은 냉각 후에 나가도록
             with cls._rate_lock:
@@ -90,9 +90,6 @@ class LotteCrawler(BaseCrawler):
             # 쿠키가 차단 상태로 오염됐을 수 있으므로 다음 요청 전 재워밍업
             self._warmed = False
         return html
-
-    def get_price_wait_selectors(self, url: str) -> List[str]:
-        return []
 
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS

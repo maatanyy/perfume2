@@ -6,7 +6,7 @@ from crawlers.base_crawler import BaseCrawler
 
 class DummyCrawler(BaseCrawler):
     def __init__(self):
-        super().__init__(use_selenium=False)
+        super().__init__()
 
     def extract_price(self, html, url):
         return {}

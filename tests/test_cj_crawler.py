@@ -96,11 +96,6 @@ class _FakeStealthySession:
         self.closed = True
 
 
-def test_no_longer_uses_selenium():
-    """CJ는 이제 Selenium(Chrome)이 아니라 scrapling 세션을 쓴다."""
-    assert CJCrawler().use_selenium is False
-
-
 def test_fetch_page_returns_rendered_html(monkeypatch):
     fake = _FakeStealthySession(pages=[_FakePage(html="<html>가격 43,000</html>")])
     monkeypatch.setattr(CJCrawler, "_create_stealthy_session", classmethod(lambda cls: fake))

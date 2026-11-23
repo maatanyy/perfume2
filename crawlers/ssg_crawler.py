@@ -143,7 +143,7 @@ class SSGCrawler(BaseCrawler):
     _virtual_display = None
 
     def __init__(self):
-        super().__init__(use_selenium=False)
+        super().__init__()
 
     # 데이터센터 IP는 봇 차단 서비스가 위험군으로 분류할 수 있다. 환경변수
     # SSG_PROXY(예: http://user:pw@host:port)가 설정되면 브라우저 워밍업과
@@ -510,7 +510,7 @@ class SSGCrawler(BaseCrawler):
             )
         return url
 
-    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+    def fetch_page(self, url: str) -> Optional[str]:
         cls = SSGCrawler
         # 서킷 브레이커: 차단 판정 중에는 요청(과 요청 간격 대기) 없이 즉시 실패
         if cls._is_blocked():
@@ -541,15 +541,6 @@ class SSGCrawler(BaseCrawler):
                 # 레이트리밋은 일시적일 수 있으므로 crawl_price의 재시도(백오프)에 맡긴다
                 raise Exception(self.REWRITE_FAIL_ERROR)
         return html
-
-    def get_price_wait_selectors(self, url: str) -> List[str]:
-        return [
-            ".cdtl_new_price.notranslate .ssg_price",
-            ".price--3",
-            "em.ssg_price",
-            "._salePrice",
-            "._bestPrice",
-        ]
 
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS

@@ -3,7 +3,7 @@
 
 주요 개선사항:
 - SSE(Server-Sent Events) 실시간 진행률 push
-- 브라우저 세마포어 5개로 확장 (5개 사이트 동시 처리)
+- 전체 동시 요청 세마포어 (5개 사이트 동시 처리)
 - 결과 상태 4분류: success / sold_out / not_found / error
 - 모든 URL 결과 빠짐없이 기록
 - 아이템 단위 진행률 업데이트 (배치 단위 → 개별 아이템)
@@ -14,7 +14,6 @@ import threading
 import queue
 import time
 import gc
-import json
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone, timedelta
@@ -36,17 +35,6 @@ def _get_thread_crawler_cache():
     if not hasattr(_thread_local, "crawler_cache"):
         _thread_local.crawler_cache = {}
     return _thread_local.crawler_cache
-
-
-def _clear_thread_crawler_cache():
-    if hasattr(_thread_local, "crawler_cache"):
-        for site_key, crawler in list(_thread_local.crawler_cache.items()):
-            try:
-                if hasattr(crawler, "_close_driver"):
-                    crawler._close_driver()
-            except Exception as e:
-                logger.debug(f"Error closing thread-local crawler {site_key}: {e}")
-        _thread_local.crawler_cache.clear()
 
 
 @dataclass
@@ -129,10 +117,8 @@ class CrawlingEngineV2:
         self.job_stats: Dict[int, JobStats] = {}
         self.app = None
 
-        # 브라우저 세마포어: 2-core 서버에서 동시 Chrome 최대 3개로 제한
-        # (5사이트 × 5workers = 25 Chrome이 동시 실행되면 CPU 포화)
+        # 전체 잡 합산 동시 요청 상한 (사이트별 간격 제어는 각 크롤러가 담당)
         self._http_semaphore = threading.Semaphore(10)
-        self._browser_semaphore = threading.Semaphore(3)
 
         self._lock = threading.Lock()
 
@@ -140,36 +126,33 @@ class CrawlingEngineV2:
         self._sse_queues: Dict[int, queue.Queue] = {}
         self._sse_lock = threading.Lock()
 
-        self._setup_memory_monitoring()
-        logger.info("[CrawlingEngineV2] 초기화 완료 (브라우저 세마포어: 5)")
+        logger.info("[CrawlingEngineV2] 초기화 완료")
 
-    def _setup_memory_monitoring(self):
+    def _setup_memory_monitoring(self, warning_mb: float, critical_mb: float):
         from utils.memory_monitor import get_memory_monitor
-        from utils.browser_pool import get_browser_pool, shutdown_browser_pool
 
         def on_memory_warning(snapshot):
             logger.warning(f"[MemoryWarning] {snapshot.rss_mb:.1f}MB - 가비지 컬렉션 실행")
             gc.collect()
 
         def on_memory_critical(snapshot):
-            logger.error(f"[MemoryCritical] {snapshot.rss_mb:.1f}MB - 브라우저 풀 리셋")
-            try:
-                pool = get_browser_pool()
-                pool.shutdown()
-                gc.collect()
-                gc.collect()
-            except Exception as e:
-                logger.error(f"브라우저 풀 리셋 실패: {e}")
+            logger.error(f"[MemoryCritical] {snapshot.rss_mb:.1f}MB - 가비지 컬렉션 실행")
+            gc.collect()
+            gc.collect()
 
         get_memory_monitor(
-            warning_threshold_mb=2500,
-            critical_threshold_mb=3200,
+            warning_threshold_mb=warning_mb,
+            critical_threshold_mb=critical_mb,
             on_warning=on_memory_warning,
             on_critical=on_memory_critical,
         )
 
     def set_app(self, app):
         self.app = app
+        self._setup_memory_monitoring(
+            app.config["MEMORY_WARNING_THRESHOLD_MB"],
+            app.config["MEMORY_CRITICAL_THRESHOLD_MB"],
+        )
 
     # =========================================================
     # SSE 큐 관리
@@ -296,12 +279,11 @@ class CrawlingEngineV2:
     def _do_crawling(self, job_id: int, spreadsheet_url: str, sheet_name: str):
         """실제 크롤링 작업"""
         from models.crawling_job import CrawlingJob
-        from models.crawling_log import CrawlingLog
         from utils.google_sheets import (
             get_sheet_data, parse_sheet_data,
             extract_spreadsheet_id, extract_gid_from_url,
         )
-        from crawlers.crawler_factory import get_crawler, get_crawler_by_url
+        from crawlers.crawler_factory import get_crawler
 
         job = CrawlingJob.query.get(job_id)
         if not job:
@@ -333,21 +315,15 @@ class CrawlingEngineV2:
             self._add_log(job_id, "INFO", f"총 {len(products)}개 제품 발견")
 
             crawler = get_crawler(job.site_name)
-            if not crawler and products:
-                first_url = products[0].get("waffle", {}).get("url")
-                if first_url:
-                    crawler = get_crawler_by_url(first_url)
-
             if not crawler:
                 raise ValueError(f"{job.site_name} 사이트는 지원되지 않습니다.")
 
-            batch_size = current_app.config.get("CRAWLING_BATCH_SIZE", 10)
-            # CJ(Selenium)는 4 workers, HTTP 사이트는 5 workers
-            selenium_sites = {"cj", "cjonstyle"}
-            if job.site_name.lower() in selenium_sites or getattr(crawler, "use_selenium", False):
-                max_workers = 4
-            else:
-                max_workers = 5
+            batch_size = current_app.config["CRAWLING_BATCH_SIZE"]
+            max_workers = current_app.config["CRAWLING_MAX_WORKERS"]
+            if job.site_name == "cj":
+                # CJ는 브라우저 1개가 요청을 직렬 처리 — 대기 줄이 길면 뒤쪽
+                # 요청이 FETCH_RESULT_TIMEOUT_S(90초)에 걸리므로 4개로 제한
+                max_workers = min(max_workers, 4)
 
             results = []
             total_batches = (len(products) + batch_size - 1) // batch_size
@@ -414,7 +390,6 @@ class CrawlingEngineV2:
             if self._should_cleanup_browsers(exclude_job_id=job_id):
                 self._kill_browser_processes()
 
-            _clear_thread_crawler_cache()
             with self._lock:
                 self.active_jobs.pop(job_id, None)
                 self.job_cancelled.pop(job_id, None)
@@ -440,8 +415,6 @@ class CrawlingEngineV2:
                         self._crawl_product_safe,
                         product,
                         default_crawler,
-                        job_id,
-                        None,
                     ): product
                     for product in batch
                 }
@@ -626,9 +599,9 @@ class CrawlingEngineV2:
             "error": stats.error_count,
         })
 
-    def _crawl_product_safe(self, product, default_crawler, job_id, crawler_cache):
+    def _crawl_product_safe(self, product, default_crawler):
         try:
-            return self._crawl_product(product, default_crawler, job_id, crawler_cache)
+            return self._crawl_product(product, default_crawler)
         except Exception as e:
             name = str(product.get("product_name", "Unknown"))[:20]
             return {
@@ -641,13 +614,9 @@ class CrawlingEngineV2:
                 "logs": [("ERROR", f"✗ {name}... 오류: {str(e)[:50]}")],
             }
 
-    def _crawl_product(self, product, default_crawler, job_id, crawler_cache):
+    def _crawl_product(self, product, default_crawler):
         """단일 제품 크롤링"""
-        from crawlers.ssg_crawler import SSGCrawler
-        from crawlers.cj_crawler import CJCrawler
-        from crawlers.shinsegae_crawler import ShinsegaeCrawler
-        from crawlers.lotte_crawler import LotteCrawler
-        from crawlers.gs_crawler import GSCrawler
+        from crawlers.crawler_factory import crawler_class_for_url
 
         result = {
             "product_id": product.get("product_id"),
@@ -659,40 +628,24 @@ class CrawlingEngineV2:
         }
 
         def get_crawler_for_url(url: str):
-            url_lower = url.lower()
-            if "shinsegaetvshopping.com" in url_lower:
-                key, cls = "shinsegae_tv", ShinsegaeCrawler
-            elif "ssg.com" in url_lower:
-                key, cls = "ssg", SSGCrawler
-            elif "cjonstyle.com" in url_lower:
-                key, cls = "cj", CJCrawler
-            elif "shinsegae" in url_lower:
-                key, cls = "shinsegae", ShinsegaeCrawler
-            elif "lotte" in url_lower:
-                key, cls = "lotte", LotteCrawler
-            elif "gsshop.com" in url_lower:
-                key, cls = "gs", GSCrawler
-            else:
-                key, cls = "default", lambda: default_crawler
-
+            # 지원하지 않는 도메인은 잡의 기본 크롤러로 시도한다
+            cls = crawler_class_for_url(url)
+            if cls is None:
+                return default_crawler
             local_cache = _get_thread_crawler_cache()
-            if key not in local_cache:
-                local_cache[key] = cls()
-            return local_cache[key]
+            if cls not in local_cache:
+                local_cache[cls] = cls()
+            return local_cache[cls]
 
         name_short = str(product.get("product_name", "Unknown"))[:20]
 
         all_statuses = []
 
         def crawl_url_with_semaphore(url: str, seller: str):
-            """URL 크롤링 - Selenium 크롤러는 브라우저 세마포어 사용"""
+            """URL 크롤링 - 전체 동시 요청 세마포어 적용"""
             crawler = get_crawler_for_url(url)
-            if getattr(crawler, "use_selenium", False):
-                with self._browser_semaphore:
-                    return crawler.crawl_price(url)
-            else:
-                with self._http_semaphore:
-                    return crawler.crawl_price(url)
+            with self._http_semaphore:
+                return crawler.crawl_price(url)
 
         # Waffle 크롤링
         waffle_info = product.get("waffle", {})
@@ -783,31 +736,20 @@ class CrawlingEngineV2:
 
     def get_system_status(self) -> Dict[str, Any]:
         from utils.memory_monitor import get_memory_monitor
-        from utils.browser_pool import get_browser_pool
         try:
             memory = get_memory_monitor().get_stats()
         except Exception:
             memory = {}
-        try:
-            browser = get_browser_pool().get_stats()
-        except Exception:
-            browser = {}
         return {
             "active_jobs": len(self.active_jobs),
             "job_ids": list(self.active_jobs.keys()),
             "memory": memory,
-            "browser_pool": browser,
         }
 
     def shutdown(self):
         logger.info("[CrawlingEngineV2] 종료 중...")
         for job_id in list(self.active_jobs.keys()):
             self.cancel_job(job_id)
-        try:
-            from utils.browser_pool import shutdown_browser_pool
-            shutdown_browser_pool()
-        except Exception:
-            pass
         try:
             from utils.memory_monitor import shutdown_memory_monitor
             shutdown_memory_monitor()

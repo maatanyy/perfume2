@@ -28,26 +28,17 @@ class Config:
     RATELIMIT_ENABLED = True
     RATELIMIT_STORAGE_URL = os.environ.get("REDIS_URL") or "memory://"
 
-    # 크롤링 설정 (8GB RAM, 4 vCPU 서버 기준)
+    # 동시 실행 잡 상한 (사용자별 / 시스템 전체)
     MAX_CONCURRENT_JOBS_PER_USER = int(os.environ.get("MAX_CONCURRENT_JOBS_PER_USER", 5))
     MAX_CONCURRENT_JOBS_SYSTEM = int(os.environ.get("MAX_CONCURRENT_JOBS_SYSTEM", 10))
 
-    # workers 5로 확장 (5개 사이트 동시)
+    # 잡 하나의 배치 크기 / 동시 워커 수
     CRAWLING_BATCH_SIZE = int(os.environ.get("CRAWLING_BATCH_SIZE", 10))
     CRAWLING_MAX_WORKERS = int(os.environ.get("CRAWLING_MAX_WORKERS", 5))
 
-    # 브라우저 풀: 5개로 확장
-    BROWSER_POOL_MAX_BROWSERS = int(os.environ.get("BROWSER_POOL_MAX_BROWSERS", 5))
-    BROWSER_POOL_MAX_REQUESTS = int(os.environ.get("BROWSER_POOL_MAX_REQUESTS", 30))
-    BROWSER_POOL_MAX_AGE_SECONDS = int(os.environ.get("BROWSER_POOL_MAX_AGE_SECONDS", 300))
-
-    # 메모리 모니터링 (8GB 서버 기준)
-    MEMORY_WARNING_THRESHOLD_MB = int(os.environ.get("MEMORY_WARNING_THRESHOLD_MB", 5500))
-    MEMORY_CRITICAL_THRESHOLD_MB = int(os.environ.get("MEMORY_CRITICAL_THRESHOLD_MB", 7000))
-
-    GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-    GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-    GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+    # 앱 프로세스 RSS 기준 메모리 경고/위험 임계값 (도달 시 GC 실행)
+    MEMORY_WARNING_THRESHOLD_MB = int(os.environ.get("MEMORY_WARNING_THRESHOLD_MB", 2500))
+    MEMORY_CRITICAL_THRESHOLD_MB = int(os.environ.get("MEMORY_CRITICAL_THRESHOLD_MB", 3200))
 
     LOG_DIR = basedir / "logs"
     LOG_DIR.mkdir(exist_ok=True)
@@ -56,9 +47,6 @@ class Config:
 class DevelopmentConfig(Config):
     DEBUG = True
     TESTING = False
-    # 로컬 개발 시 메모리 임계값 낮춤
-    MEMORY_WARNING_THRESHOLD_MB = 2500
-    MEMORY_CRITICAL_THRESHOLD_MB = 3200
 
 
 class ProductionConfig(Config):

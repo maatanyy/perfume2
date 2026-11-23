@@ -94,7 +94,7 @@ def test_stub_page_triggers_one_refetch(monkeypatch):
     pages = [STUB_HTML, NORMAL_HTML]
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_fetch(self, url):
         calls.append(url)
         return pages.pop(0)
 
@@ -110,7 +110,7 @@ def test_normal_page_not_refetched(monkeypatch):
     monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_fetch(self, url):
         calls.append(url)
         return NORMAL_HTML
 
@@ -127,7 +127,7 @@ def test_persistent_stub_returns_stub_not_error(monkeypatch):
     monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     monkeypatch.setattr(ShinsegaeCrawler, "DEGRADED_RETRY_DELAY", 0.0)
     monkeypatch.setattr(
-        BaseCrawler, "fetch_page", lambda self, url, wait_time=2: STUB_HTML
+        BaseCrawler, "fetch_page", lambda self, url: STUB_HTML
     )
     html = ShinsegaeCrawler().fetch_page("http://t/1")
     assert html == STUB_HTML
@@ -140,7 +140,7 @@ def test_none_response_not_refetched(monkeypatch):
     monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.0)
     calls = []
 
-    def fake_fetch(self, url, wait_time=2):
+    def fake_fetch(self, url):
         calls.append(url)
         return None
 
@@ -154,7 +154,7 @@ def test_request_interval_enforced(monkeypatch):
     import time
     from crawlers.base_crawler import BaseCrawler
 
-    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url, wait_time=2: NORMAL_HTML)
+    monkeypatch.setattr(BaseCrawler, "fetch_page", lambda self, url: NORMAL_HTML)
     monkeypatch.setattr(ShinsegaeCrawler, "_current_interval", 0.3)
     monkeypatch.setattr(ShinsegaeCrawler, "_last_fetch_at", 0.0)
 

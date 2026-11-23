@@ -1,28 +1,15 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from flask_login import login_required, current_user
 from database import db
 from utils.decorators import approved_required
-from utils.google_sheets import get_sheet_list, extract_spreadsheet_id
-from app import limiter
+from utils.google_sheets import extract_spreadsheet_id
 from utils.crawling_engine_v2 import get_crawling_engine_v2
-from datetime import datetime
+from crawlers.crawler_factory import SITES as SITE_CONFIG
 import logging
 
 logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
-
-MAX_CONCURRENT_JOBS_PER_USER = 5
-MAX_TOTAL_CONCURRENT_JOBS = 10
-
-# 사이트별 메타 정보
-SITE_CONFIG = {
-    "ssg": {"label": "SSG.COM", "domain": "ssg.com", "icon": "🛒"},
-    "cj": {"label": "CJ온스타일", "domain": "cjonstyle.com", "icon": "📺"},
-    "ssg_shoping": {"label": "신세계TV쇼핑", "domain": "shinsegaetvshopping.com", "icon": "🏪"},
-    "롯데아이몰": {"label": "롯데아이몰", "domain": "lotteimall.com", "icon": "🎡"},
-    "gs": {"label": "GS샵", "domain": "gsshop.com", "icon": "🏬"},
-}
 
 
 def get_crawling_engine():
@@ -101,7 +88,6 @@ def settings():
 def start_site(site_name):
     """특정 사이트 크롤링 시작"""
     from models.crawling_job import CrawlingJob
-    from flask import session
 
     if site_name not in SITE_CONFIG:
         flash("지원하지 않는 사이트입니다.", "error")
@@ -128,15 +114,16 @@ def start_site(site_name):
         return redirect(url_for("dashboard.index"))
 
     # 동시 작업 수 확인
+    per_user_limit = current_app.config["MAX_CONCURRENT_JOBS_PER_USER"]
     active_count = CrawlingJob.query.filter_by(
         user_id=current_user.id, status="running"
     ).count()
-    if active_count >= MAX_CONCURRENT_JOBS_PER_USER:
-        flash(f"동시 실행 가능한 작업 수를 초과했습니다. (최대 {MAX_CONCURRENT_JOBS_PER_USER}개)", "error")
+    if active_count >= per_user_limit:
+        flash(f"동시 실행 가능한 작업 수를 초과했습니다. (최대 {per_user_limit}개)", "error")
         return redirect(url_for("dashboard.index"))
 
     total_active = CrawlingJob.query.filter_by(status="running").count()
-    if total_active >= MAX_TOTAL_CONCURRENT_JOBS:
+    if total_active >= current_app.config["MAX_CONCURRENT_JOBS_SYSTEM"]:
         flash(f"시스템이 현재 바쁩니다. 잠시 후 다시 시도해주세요.", "warning")
         return redirect(url_for("dashboard.index"))
 
@@ -188,7 +175,7 @@ def start_all():
             continue
 
         total_active = CrawlingJob.query.filter_by(status="running").count()
-        if total_active >= MAX_TOTAL_CONCURRENT_JOBS:
+        if total_active >= current_app.config["MAX_CONCURRENT_JOBS_SYSTEM"]:
             skipped.append(site_info["label"])
             continue
 

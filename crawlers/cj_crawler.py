@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class CJCrawler(BaseCrawler):
-    """CJ온스타일 크롤러 (scrapling Camoufox) - 판매가/쿠폰적용가 분리"""
+    """CJ온스타일 크롤러 (scrapling StealthySession) - 판매가/쿠폰적용가 분리"""
 
     SALE_PRICE_SELECTORS = [
         ".item_price strong.ff_price",
@@ -50,10 +50,10 @@ class CJCrawler(BaseCrawler):
     DELIVERY_WAIT_TIMEOUT_MS = 3_000
 
     # CJ 상품 페이지는 SPA라 정적 HTML에 가격이 없고(2026-07 실측), headless
-    # Chrome(Selenium)은 서버에서 봇 감지로 빈 페이지를 받는다. Camoufox
-    # (위장 Firefox, scrapling StealthySession)는 headless로도 감지를 통과해
-    # 가격이 렌더된 HTML을 받음을 실측 확인 → 브라우저 방식을 이것으로 교체.
-    # Camoufox 브라우저 1개를 클래스 전역으로 공유하고 fetch를 락으로 직렬화.
+    # Chrome(Selenium)은 서버에서 봇 감지로 빈 페이지를 받는다. scrapling
+    # StealthySession(0.4 기준 patchright Chromium — Camoufox가 아님)은
+    # headless로도 감지를 통과해 가격이 렌더된 HTML을 받음을 실측 확인.
+    # 브라우저 1개를 클래스 전역으로 공유하고 fetch를 락으로 직렬화.
     # 15초/내부재시도 1회: 없는 상품 URL은 CJ 메인으로 리다이렉트되어 대기
     # 선택자가 영원히 안 나타난다. 기본값(30초×3회)이면 건당 ~90초 + 세션
     # 파괴 예외까지 발생(2026-07 실측) → 15초 후 정상 반환되도록 제한.
@@ -71,7 +71,7 @@ class CJCrawler(BaseCrawler):
     FETCH_RESULT_TIMEOUT_S = 90
 
     def __init__(self):
-        super().__init__(use_selenium=False)
+        super().__init__()
 
     def get_price_wait_selectors(self, url: str) -> List[str]:
         return [
@@ -142,7 +142,7 @@ class CJCrawler(BaseCrawler):
                 )
             return cls._fetch_executor
 
-    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+    def fetch_page(self, url: str) -> Optional[str]:
         future = self._get_fetch_executor().submit(self._fetch_in_browser_thread, url)
         try:
             return future.result(timeout=self.FETCH_RESULT_TIMEOUT_S)
@@ -174,7 +174,7 @@ class CJCrawler(BaseCrawler):
 
     # 주의: _close_driver를 오버라이드해 공유 세션을 닫으면 안 된다 —
     # 엔진이 스레드별 크롤러 인스턴스를 쓰므로 한 인스턴스의 정리(__del__ 포함)가
-    # 다른 스레드가 쓰는 브라우저를 죽인다. Camoufox 세션은 프로세스 수명 동안
+    # 다른 스레드가 쓰는 브라우저를 죽인다. 브라우저 세션은 프로세스 수명 동안
     # 유지한다 (요청 실패 시 fetch_page 안에서만 재생성).
 
     def _extract_delivery(self, soup):

@@ -8,7 +8,7 @@
     
     <!-- 요약 카드 -->
     <div class="row mb-4">
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card bg-primary text-white">
                 <div class="card-body">
                     <h6 class="card-title">활성 작업</h6>
@@ -16,7 +16,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card" id="memory-card">
                 <div class="card-body">
                     <h6 class="card-title">메모리 사용량</h6>
@@ -25,16 +25,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card">
-                <div class="card-body">
-                    <h6 class="card-title">브라우저 풀</h6>
-                    <h2><span id="browser-active">-</span> / <span id="browser-max">-</span></h2>
-                    <small class="text-muted">활성 / 최대</small>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card">
                 <div class="card-body">
                     <h6 class="card-title">시스템 가용 메모리</h6>
@@ -79,39 +70,7 @@
                 </div>
             </div>
         </div>
-        
-        <div class="col-md-6">
-            <div class="card mb-4">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span>브라우저 풀 상세</span>
-                    <button class="btn btn-sm btn-danger" onclick="resetBrowserPool()">🔄 풀 리셋</button>
-                </div>
-                <div class="card-body">
-                    <table class="table table-sm">
-                        <tr>
-                            <td>총 생성 수</td>
-                            <td id="browser-created">-</td>
-                        </tr>
-                        <tr>
-                            <td>총 요청 수</td>
-                            <td id="browser-requests">-</td>
-                        </tr>
-                        <tr>
-                            <td>현재 활성</td>
-                            <td id="browser-current">-</td>
-                        </tr>
-                        <tr>
-                            <td>풀 대기 중</td>
-                            <td id="browser-pool-size">-</td>
-                        </tr>
-                        <tr>
-                            <td>재활용 횟수</td>
-                            <td id="browser-recycled">-</td>
-                        </tr>
-                    </table>
-                </div>
-            </div>
-        </div>
+
     </div>
     
     <!-- 활성 작업 목록 -->
@@ -187,21 +146,7 @@ function updateStatus() {
             document.getElementById('detail-gc').textContent = stats.gc_count || 0;
         })
         .catch(e => console.error('메모리 조회 실패:', e));
-    
-    // 브라우저 풀 상태
-    fetch('/api/system/browser-pool')
-        .then(r => r.json())
-        .then(data => {
-            document.getElementById('browser-active').textContent = data.current_active || 0;
-            document.getElementById('browser-max').textContent = data.max_browsers || '-';
-            
-            document.getElementById('browser-created').textContent = data.total_created || 0;
-            document.getElementById('browser-requests').textContent = data.total_requests || 0;
-            document.getElementById('browser-current').textContent = data.current_active || 0;
-            document.getElementById('browser-pool-size').textContent = data.pool_size || 0;
-            document.getElementById('browser-recycled').textContent = data.recycled_count || 0;
-        })
-        .catch(e => console.error('브라우저 풀 조회 실패:', e));
+
 }
 
 function forceGC() {
@@ -212,22 +157,6 @@ function forceGC() {
         .then(data => {
             if (data.success) {
                 alert(`GC 완료! ${data.freed_mb}MB 해제됨`);
-                updateStatus();
-            } else {
-                alert('오류: ' + data.error);
-            }
-        })
-        .catch(e => alert('오류: ' + e));
-}
-
-function resetBrowserPool() {
-    if (!confirm('브라우저 풀을 리셋하시겠습니까? 현재 진행 중인 크롤링에 영향을 줄 수 있습니다.')) return;
-    
-    fetch('/api/system/browser-pool/reset', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                alert('브라우저 풀이 리셋되었습니다.');
                 updateStatus();
             } else {
                 alert('오류: ' + data.error);

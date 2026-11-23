@@ -90,7 +90,7 @@ def create_app(config_name=None):
     from utils.crawling_engine_v2 import get_crawling_engine_v2
     engine_v2 = get_crawling_engine_v2()
     engine_v2.set_app(app)
-    logger.info("✅ 크롤링 엔진 v2 초기화 완료 (브라우저 세마포어: 5)")
+    logger.info("✅ 크롤링 엔진 v2 초기화 완료")
 
     def cleanup():
         logger.info("🧹 앱 종료 - 리소스 정리 중...")

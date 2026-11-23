@@ -3,7 +3,6 @@
 from crawlers.base_crawler import BaseCrawler
 from bs4 import BeautifulSoup
 from typing import Dict, List, Optional
-import re
 import logging
 import threading
 import time
@@ -58,7 +57,7 @@ class ShinsegaeCrawler(BaseCrawler):
     _good_streak = 0
 
     def __init__(self):
-        super().__init__(use_selenium=False)
+        super().__init__()
 
     def _looks_degraded(self, html: Optional[str]) -> bool:
         return bool(
@@ -85,18 +84,18 @@ class ShinsegaeCrawler(BaseCrawler):
                 cls.MIN_REQUEST_INTERVAL, cls._current_interval * cls.DECAY_FACTOR
             )
 
-    def _gated_fetch(self, url: str, wait_time: int) -> Optional[str]:
+    def _gated_fetch(self, url: str) -> Optional[str]:
         cls = ShinsegaeCrawler
         with cls._rate_lock:
             wait = cls._current_interval - (time.monotonic() - cls._last_fetch_at)
             if wait > 0:
                 time.sleep(wait)
             cls._last_fetch_at = time.monotonic()
-        return super().fetch_page(url, wait_time)
+        return super().fetch_page(url)
 
-    def fetch_page(self, url: str, wait_time: int = 2) -> Optional[str]:
+    def fetch_page(self, url: str) -> Optional[str]:
         cls = ShinsegaeCrawler
-        html = self._gated_fetch(url, wait_time)
+        html = self._gated_fetch(url)
         if not self._looks_degraded(html):
             cls._note_good()
             return html
@@ -106,19 +105,11 @@ class ShinsegaeCrawler(BaseCrawler):
             f"{self.DEGRADED_RETRY_DELAY}초 후 재요청"
         )
         time.sleep(self.DEGRADED_RETRY_DELAY)
-        retry_html = self._gated_fetch(url, wait_time)
+        retry_html = self._gated_fetch(url)
         if retry_html and not self._looks_degraded(retry_html):
             cls._note_good()
             return retry_html
         return retry_html or html
-
-    def get_price_wait_selectors(self, url: str) -> List[str]:
-        return [
-            "._bestPrice",
-            "._salePrice",
-            ".price--3 ._bestPrice",
-            ".div-best ._bestPrice",
-        ]
 
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS

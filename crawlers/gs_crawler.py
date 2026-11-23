@@ -37,10 +37,7 @@ class GSCrawler(BaseCrawler):
     ]
 
     def __init__(self):
-        super().__init__(use_selenium=False)
-
-    def get_price_wait_selectors(self, url: str) -> List[str]:
-        return []  # HTTP 방식 - 불필요
+        super().__init__()
 
     def get_sold_out_selectors(self) -> List[str]:
         return self.SOLD_OUT_SELECTORS
